@@ -1,0 +1,24 @@
+{
+  "network": {
+    "allowedDomains": [
+      "*.github.com",
+      "github.com",
+      "*.githubusercontent.com",
+      "*.docker.com",
+      "*.docker.io",
+      "*.flanksource.com",
+      "flanksource.com",
+      "*.npmjs.org",
+      "registry.npmjs.org",
+      "localhost"
+    ],
+    "deniedDomains": [],
+    "allowLocalBinding": true,
+    "allowAllUnixSockets": true
+  },
+  "filesystem": {
+    "denyRead": [],
+    "allowWrite": [],
+    "denyWrite": []
+  }
+}
