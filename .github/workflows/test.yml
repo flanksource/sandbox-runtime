@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -20,13 +21,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install ripgrep
-        run: |
-          if [ "$(uname)" = "Darwin" ]; then
-            brew install ripgrep
-          else
-            sudo apt-get update && sudo apt-get install -y ripgrep
-          fi
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ripgrep
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap socat
 
       - name: Run tests
         run: go test ./... -v -count=1 -timeout 120s
