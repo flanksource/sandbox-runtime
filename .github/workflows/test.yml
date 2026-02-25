@@ -8,11 +8,18 @@ on:
 
 jobs:
   test:
+    name: Test (${{ matrix.label }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - runs_on: ubuntu-latest
+            label: linux/amd64
+          - runs_on: ubuntu-24.04-arm
+            label: linux/arm64
+          - runs_on: macos-14
+            label: macos/arm64
+    runs-on: ${{ matrix.runs_on }}
 
     steps:
       - uses: actions/checkout@v4
