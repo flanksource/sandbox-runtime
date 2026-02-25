@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"reflect"
 	"runtime"
 	"strings"
@@ -14,6 +15,18 @@ func skipIfUnsupported(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("unsupported platform")
+	}
+
+	// On Linux, bwrap needs the ability to create user/network namespaces.
+	// In unprivileged containers (Docker, K8s) this fails even if bwrap is
+	// installed.
+	// Do a quick probe so the tests skip cleanly instead of
+	// failing with "Operation not permitted".
+	if runtime.GOOS == "linux" {
+		probe := exec.Command("bwrap", "--unshare-net", "--dev", "/dev", "--ro-bind", "/", "/", "--", "/bin/true")
+		if err := probe.Run(); err != nil {
+			t.Skipf("bwrap cannot create namespaces (unprivileged container?): %v", err)
+		}
 	}
 }
 
