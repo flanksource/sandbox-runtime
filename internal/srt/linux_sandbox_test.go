@@ -32,7 +32,7 @@ func TestLinuxGetMandatoryDenyPaths_ScansNestedDangerousPaths(t *testing.T) {
 	mustWriteFile(t, filepath.Join("subrepo", ".git", "hooks", "pre-commit"), "#!/bin/sh")
 	mustWriteFile(t, filepath.Join("subrepo", ".git", "config"), "[core]")
 
-	denyPaths := linuxGetMandatoryDenyPaths(context.Background(), nil, 3, false)
+	denyPaths := linuxGetMandatoryDenyPaths(context.Background(), nil, 5, false)
 
 	expectContainsPath(t, denyPaths, filepath.Join(tmp, "sub", ".vscode"))
 	expectContainsPath(t, denyPaths, filepath.Join(tmp, "sub", ".claude", "commands"))
@@ -61,8 +61,8 @@ func TestLinuxGetMandatoryDenyPaths_AllowGitConfigToggle(t *testing.T) {
 	mustWriteFile(t, filepath.Join("nested", ".git", "hooks", "pre-push"), "#!/bin/sh")
 	mustWriteFile(t, filepath.Join("nested", ".git", "config"), "[core]")
 
-	denyWithGitConfigBlocked := linuxGetMandatoryDenyPaths(context.Background(), nil, 3, false)
-	denyWithGitConfigAllowed := linuxGetMandatoryDenyPaths(context.Background(), nil, 3, true)
+	denyWithGitConfigBlocked := linuxGetMandatoryDenyPaths(context.Background(), nil, 5, false)
+	denyWithGitConfigAllowed := linuxGetMandatoryDenyPaths(context.Background(), nil, 5, true)
 
 	rootGitConfig := filepath.Join(tmp, ".git", "config")
 	nestedGitConfig := filepath.Join(tmp, "nested", ".git", "config")
