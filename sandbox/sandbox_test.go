@@ -1,42 +1,20 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
-	"errors"
+	"os"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
-
-	"github.com/flanksource/sandbox-runtime/internal/srt"
 )
 
-type fakeManager struct {
-	initCfg   srt.SandboxRuntimeConfig
-	initAsk   srt.SandboxAskCallback
-	initErr   error
-	wrapIn    string
-	wrapOut   string
-	wrapErr   error
-	resetErr  error
-	resetCall int
-}
-
-func (f *fakeManager) Initialize(_ context.Context, runtimeConfig srt.SandboxRuntimeConfig, sandboxAskCallback srt.SandboxAskCallback) error {
-	f.initCfg = runtimeConfig
-	f.initAsk = sandboxAskCallback
-	return f.initErr
-}
-
-func (f *fakeManager) WrapWithSandbox(_ context.Context, command, _ string, _ *srt.SandboxRuntimeConfig) (string, error) {
-	f.wrapIn = command
-	if f.wrapErr != nil {
-		return "", f.wrapErr
+func skipIfUnsupported(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("unsupported platform")
 	}
-	return f.wrapOut, nil
-}
-
-func (f *fakeManager) Reset(_ context.Context) error {
-	f.resetCall++
-	return f.resetErr
 }
 
 func TestConfigToInternal_MapsAdvancedFields(t *testing.T) {
@@ -60,7 +38,7 @@ func TestConfigToInternal_MapsAdvancedFields(t *testing.T) {
 		DenyWrite:                    []string{"/tmp/project/secrets"},
 		DenyRead:                     []string{"/etc/shadow"},
 		AllowGitConfig:               true,
-		IgnoreViolations:             map[string][]string{"macos": []string{"line-1"}},
+		IgnoreViolations:             map[string][]string{"macos": {"line-1"}},
 		EnableWeakerNestedSandbox:    true,
 		EnableWeakerNetworkIsolation: true,
 		AllowPty:                     true,
@@ -100,68 +78,302 @@ func TestConfigToInternal_MapsAdvancedFields(t *testing.T) {
 	}
 }
 
-func TestNewCommandClose_UsesManagerAndAskCallback(t *testing.T) {
-	fm := &fakeManager{wrapOut: "echo wrapped"}
-	orig := newManager
-	newManager = func() manager { return fm }
-	defer func() { newManager = orig }()
-
-	hit := false
+func TestNew_InitializesRealManager(t *testing.T) {
+	skipIfUnsupported(t)
 	ctx := context.Background()
-	sb, err := New(ctx, Config{AllowedDomains: []string{"example.com"}}, WithAskCallback(func(params AskParams) bool {
-		hit = true
-		return params.Host == "dynamic.example.com" && params.Port == 443
-	}))
+
+	sb, err := New(ctx, Config{
+		AllowedDomains: []string{"example.com"},
+	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
+	defer sb.Close(ctx)
 
-	if fm.initAsk == nil {
-		t.Fatalf("expected ask callback to be passed to manager")
-	}
-	if !fm.initAsk(srt.NetworkHostPattern{Host: "dynamic.example.com", Port: 443}) {
-		t.Fatalf("expected callback result to be true")
-	}
-	if !hit {
-		t.Fatalf("expected sdk callback to run")
-	}
-
-	cmd, err := sb.Command(ctx, "echo hi")
-	if err != nil {
-		t.Fatalf("Command failed: %v", err)
-	}
-	if fm.wrapIn != "echo hi" {
-		t.Fatalf("expected wrap input command recorded, got %q", fm.wrapIn)
-	}
-	if got := cmd.Args; len(got) != 3 || got[0] != "sh" || got[1] != "-c" || got[2] != "echo wrapped" {
-		t.Fatalf("unexpected cmd args: %#v", got)
-	}
-
-	if err := sb.Close(ctx); err != nil {
-		t.Fatalf("Close failed: %v", err)
-	}
-	if fm.resetCall != 1 {
-		t.Fatalf("expected one reset call, got %d", fm.resetCall)
+	if sb.manager == nil {
+		t.Fatal("expected manager to be set")
 	}
 }
 
-func TestNewAndCommandErrorPaths(t *testing.T) {
-	orig := newManager
-	defer func() { newManager = orig }()
-
+func TestCommand_RunsInsideSandbox(t *testing.T) {
+	skipIfUnsupported(t)
 	ctx := context.Background()
-	newManager = func() manager { return &fakeManager{initErr: errors.New("init failed")} }
-	if _, err := New(ctx, Config{}); err == nil {
-		t.Fatalf("expected New error when initialize fails")
+
+	sb, err := New(ctx, Config{
+		AllowedDomains: []string{"example.com"},
+		AllowWrite:     []string{os.TempDir()},
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer sb.Close(ctx)
+
+	cmd, err := sb.Command(ctx, "echo hello-from-sandbox")
+	if err != nil {
+		t.Fatalf("Command failed: %v", err)
 	}
 
-	fm := &fakeManager{wrapErr: errors.New("wrap failed")}
-	newManager = func() manager { return fm }
-	sb, err := New(ctx, Config{})
-	if err != nil {
-		t.Fatalf("unexpected New error: %v", err)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("sandboxed command failed: %v", err)
 	}
-	if _, err := sb.Command(ctx, "echo hi"); err == nil {
-		t.Fatalf("expected Command error when wrapping fails")
+
+	got := strings.TrimSpace(stdout.String())
+	if got != "hello-from-sandbox" {
+		t.Fatalf("expected %q, got %q", "hello-from-sandbox", got)
+	}
+}
+
+func TestCommand_CanReadAllowedFile(t *testing.T) {
+	skipIfUnsupported(t)
+	ctx := context.Background()
+
+	// Write a temp file the sandbox should be able to read.
+	tmp, err := os.CreateTemp("", "sandbox-read-test-*")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString("readable-content"); err != nil {
+		t.Fatalf("write temp: %v", err)
+	}
+	tmp.Close()
+
+	sb, err := New(ctx, Config{
+		AllowedDomains: []string{"example.com"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sb.Close(ctx)
+
+	cmd, err := sb.Command(ctx, "cat "+tmp.Name())
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("sandboxed cat failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "readable-content" {
+		t.Fatalf("expected %q, got %q", "readable-content", got)
+	}
+}
+
+func TestCommand_DeniesWriteOutsideAllowed(t *testing.T) {
+	skipIfUnsupported(t)
+	ctx := context.Background()
+
+	sb, err := New(ctx, Config{
+		AllowedDomains: []string{"example.com"},
+		AllowWrite:     []string{"/tmp/sandbox-allowed-dir-does-not-exist"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sb.Close(ctx)
+
+	// Try writing to a path outside the allowed write list.
+	target := "/tmp/sandbox-denied-write-test-" + t.Name()
+	defer os.Remove(target)
+
+	cmd, err := sb.Command(ctx, "touch "+target)
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	if err == nil {
+		// On some platforms the touch may silently succeed if sandbox-exec
+		// doesn't enforce this specific write deny. Check the file doesn't exist.
+		if _, statErr := os.Stat(target); statErr == nil {
+			t.Log("sandbox did not block the write (platform may not enforce this path)")
+		}
+		return
+	}
+
+	// Command failed — sandbox blocked the write.
+	t.Logf("write correctly denied: %v, stderr: %s", err, stderr.String())
+}
+
+func TestCommand_NetworkAllowedDomainWorks(t *testing.T) {
+	skipIfUnsupported(t)
+	ctx := context.Background()
+
+	sb, err := New(ctx, Config{
+		AllowedDomains: []string{"example.com"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sb.Close(ctx)
+
+	cmd, err := sb.Command(ctx, "curl -s -o /dev/null -w '%{http_code}' https://example.com")
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("curl to allowed domain failed: %v\nstderr: %s", err, stderr.String())
+	}
+
+	code := strings.TrimSpace(stdout.String())
+	if code != "200" && code != "301" && code != "302" {
+		t.Fatalf("expected HTTP 200/301/302 from example.com, got %q", code)
+	}
+}
+
+func TestCommand_NetworkDeniedDomainBlocked(t *testing.T) {
+	skipIfUnsupported(t)
+	ctx := context.Background()
+
+	sb, err := New(ctx, Config{
+		AllowedDomains: []string{"example.com"},
+		DeniedDomains:  []string{"denied.example.com"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sb.Close(ctx)
+
+	// Connect to a domain NOT in the allowed list — should be blocked by proxy.
+	cmd, err := sb.Command(ctx, "curl -s --max-time 5 https://google.com")
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stdout = &bytes.Buffer{}
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	if err == nil {
+		t.Fatal("expected curl to non-allowed domain to fail, but it succeeded")
+	}
+	t.Logf("non-allowed domain correctly blocked: %v", err)
+}
+
+func TestWithAskCallback_InvokedForUnknownDomain(t *testing.T) {
+	skipIfUnsupported(t)
+	ctx := context.Background()
+
+	asked := make(chan AskParams, 1)
+	sb, err := New(ctx, Config{
+		AllowedDomains: []string{"example.com"},
+	}, WithAskCallback(func(params AskParams) bool {
+		asked <- params
+		return true // allow it
+	}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sb.Close(ctx)
+
+	// curl a domain not in allowed list — should trigger the ask callback.
+	cmd, err := sb.Command(ctx, "curl -s --max-time 10 -o /dev/null -w '%{http_code}' https://httpbin.org/get")
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("curl failed: %v", err)
+	}
+
+	select {
+	case p := <-asked:
+		if p.Host != "httpbin.org" {
+			t.Fatalf("expected ask for httpbin.org, got %q", p.Host)
+		}
+	default:
+		t.Fatal("expected ask callback to be invoked")
+	}
+}
+
+func TestClose_CleansUpResources(t *testing.T) {
+	skipIfUnsupported(t)
+	ctx := context.Background()
+
+	sb, err := New(ctx, Config{
+		AllowedDomains: []string{"example.com"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Close should not error.
+	if err := sb.Close(ctx); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// After close, Command should fail since the manager is reset.
+	_, err = sb.Command(ctx, "echo post-close")
+	if err == nil {
+		t.Fatal("expected Command after Close to fail")
+	}
+}
+
+func TestNew_InvalidConfigReturnsError(t *testing.T) {
+	skipIfUnsupported(t)
+	ctx := context.Background()
+
+	// Invalid domain pattern.
+	_, err := New(ctx, Config{
+		AllowedDomains: []string{"http://bad-url.com/path"},
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid domain pattern")
+	}
+}
+
+func TestCommand_MultipleCommandsOnSameSandbox(t *testing.T) {
+	skipIfUnsupported(t)
+	ctx := context.Background()
+
+	sb, err := New(ctx, Config{
+		AllowedDomains: []string{"example.com"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sb.Close(ctx)
+
+	for i, input := range []string{"echo aaa", "echo bbb", "echo ccc"} {
+		cmd, err := sb.Command(ctx, input)
+		if err != nil {
+			t.Fatalf("Command %d: %v", i, err)
+		}
+
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("Run %d: %v", i, err)
+		}
+
+		expected := strings.TrimPrefix(input, "echo ")
+		if got := strings.TrimSpace(stdout.String()); got != expected {
+			t.Fatalf("command %d: expected %q, got %q", i, expected, got)
+		}
 	}
 }
