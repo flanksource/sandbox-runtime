@@ -91,6 +91,28 @@ func TestConfigToInternal_MapsAdvancedFields(t *testing.T) {
 	}
 }
 
+func TestIsSupported_HonorsConfiguredRipgrepCommand(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("unsupported platform")
+	}
+
+	if !IsSupported(Config{}) {
+		t.Skip("default sandbox dependencies not available on this machine")
+	}
+
+	cfg := Config{Ripgrep: &RipgrepConfig{Command: "definitely-missing-rg-custom-cmd"}}
+	if IsSupported(cfg) {
+		t.Fatal("expected IsSupported to honor custom ripgrep command and return false")
+	}
+}
+
+func TestIsSupported_InvalidConfigReturnsFalse(t *testing.T) {
+	cfg := Config{AllowedDomains: []string{"https://bad.example.com/path"}}
+	if IsSupported(cfg) {
+		t.Fatal("expected IsSupported to return false for invalid config")
+	}
+}
+
 func TestNew_InitializesRealManager(t *testing.T) {
 	skipIfUnsupported(t)
 	ctx := context.Background()
