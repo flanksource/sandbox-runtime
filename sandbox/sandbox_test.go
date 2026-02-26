@@ -5,7 +5,6 @@ import (
 	"context"
 	"os"
 	"os/exec"
-	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -30,67 +29,6 @@ func skipIfUnsupported(t *testing.T) {
 	}
 }
 
-func TestConfigToInternal_MapsAdvancedFields(t *testing.T) {
-	httpPort := 19001
-	socksPort := 19002
-	cfg := Config{
-		AllowedDomains: []string{"example.com"},
-		DeniedDomains:  []string{"blocked.com"},
-		AllowUnixSockets: []string{
-			"/var/run/docker.sock",
-		},
-		AllowAllUnixSockets: true,
-		AllowLocalBinding:   true,
-		HTTPProxyPort:       &httpPort,
-		SocksProxyPort:      &socksPort,
-		MitmProxy: &MitmProxyConfig{
-			SocketPath: "/tmp/mitm.sock",
-			Domains:    []string{"*.corp.local"},
-		},
-		AllowWrite:                   []string{"/tmp/project"},
-		DenyWrite:                    []string{"/tmp/project/secrets"},
-		DenyRead:                     []string{"/etc/shadow"},
-		AllowGitConfig:               true,
-		IgnoreViolations:             map[string][]string{"macos": {"line-1"}},
-		EnableWeakerNestedSandbox:    true,
-		EnableWeakerNetworkIsolation: true,
-		AllowPty:                     true,
-		MandatoryDenySearchDepth:     4,
-		Ripgrep:                      &RipgrepConfig{Command: "rg", Args: []string{"--hidden"}},
-		Seccomp:                      &SeccompConfig{BPFPath: "/opt/seccomp.bpf", ApplyPath: "/opt/apply-seccomp"},
-	}
-
-	internal := cfg.toInternal()
-
-	if !reflect.DeepEqual(internal.Network.AllowedDomains, []string{"example.com"}) {
-		t.Fatalf("allowed domains mismatch: %#v", internal.Network.AllowedDomains)
-	}
-	if !reflect.DeepEqual(internal.Network.AllowUnixSockets, []string{"/var/run/docker.sock"}) {
-		t.Fatalf("allowUnixSockets mismatch: %#v", internal.Network.AllowUnixSockets)
-	}
-	if internal.Network.HTTPProxyPort == nil || *internal.Network.HTTPProxyPort != httpPort {
-		t.Fatalf("httpProxyPort mismatch: %#v", internal.Network.HTTPProxyPort)
-	}
-	if internal.Network.MitmProxy == nil || internal.Network.MitmProxy.SocketPath != "/tmp/mitm.sock" {
-		t.Fatalf("mitm mapping mismatch: %#v", internal.Network.MitmProxy)
-	}
-	if !internal.Filesystem.AllowGitConfig {
-		t.Fatalf("expected allowGitConfig=true")
-	}
-	if internal.MandatoryDenySearchDepth != 4 {
-		t.Fatalf("mandatory deny depth mismatch: %d", internal.MandatoryDenySearchDepth)
-	}
-	if internal.Ripgrep == nil || internal.Ripgrep.Command != "rg" {
-		t.Fatalf("ripgrep mapping mismatch: %#v", internal.Ripgrep)
-	}
-	if internal.Seccomp == nil || internal.Seccomp.ApplyPath != "/opt/apply-seccomp" {
-		t.Fatalf("seccomp mapping mismatch: %#v", internal.Seccomp)
-	}
-	if !internal.EnableWeakerNestedSandbox || !internal.EnableWeakerNetworkIsolation || !internal.AllowPty {
-		t.Fatalf("runtime toggles not mapped correctly: %+v", internal)
-	}
-}
-
 func TestIsSupported_HonorsConfiguredRipgrepCommand(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("unsupported platform")
@@ -107,7 +45,7 @@ func TestIsSupported_HonorsConfiguredRipgrepCommand(t *testing.T) {
 }
 
 func TestIsSupported_InvalidConfigReturnsFalse(t *testing.T) {
-	cfg := Config{AllowedDomains: []string{"https://bad.example.com/path"}}
+	cfg := Config{Network: NetworkConfig{AllowedDomains: []string{"https://bad.example.com/path"}}}
 	if IsSupported(cfg) {
 		t.Fatal("expected IsSupported to return false for invalid config")
 	}
@@ -118,7 +56,7 @@ func TestNew_InitializesRealManager(t *testing.T) {
 	ctx := context.Background()
 
 	sb, err := New(ctx, Config{
-		AllowedDomains: []string{"example.com"},
+		Network: NetworkConfig{AllowedDomains: []string{"example.com"}},
 	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -135,8 +73,8 @@ func TestCommand_RunsInsideSandbox(t *testing.T) {
 	ctx := context.Background()
 
 	sb, err := New(ctx, Config{
-		AllowedDomains: []string{"example.com"},
-		AllowWrite:     []string{os.TempDir()},
+		Network:    NetworkConfig{AllowedDomains: []string{"example.com"}},
+		Filesystem: FilesystemConfig{AllowWrite: []string{os.TempDir()}},
 	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -178,7 +116,7 @@ func TestCommand_CanReadAllowedFile(t *testing.T) {
 	tmp.Close()
 
 	sb, err := New(ctx, Config{
-		AllowedDomains: []string{"example.com"},
+		Network: NetworkConfig{AllowedDomains: []string{"example.com"}},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -208,8 +146,8 @@ func TestCommand_DeniesWriteOutsideAllowed(t *testing.T) {
 	ctx := context.Background()
 
 	sb, err := New(ctx, Config{
-		AllowedDomains: []string{"example.com"},
-		AllowWrite:     []string{"/tmp/sandbox-allowed-dir-does-not-exist"},
+		Network:    NetworkConfig{AllowedDomains: []string{"example.com"}},
+		Filesystem: FilesystemConfig{AllowWrite: []string{"/tmp/sandbox-allowed-dir-does-not-exist"}},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -248,7 +186,7 @@ func TestCommand_NetworkAllowedDomainWorks(t *testing.T) {
 	ctx := context.Background()
 
 	sb, err := New(ctx, Config{
-		AllowedDomains: []string{"example.com"},
+		Network: NetworkConfig{AllowedDomains: []string{"example.com"}},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -279,8 +217,10 @@ func TestCommand_NetworkDeniedDomainBlocked(t *testing.T) {
 	ctx := context.Background()
 
 	sb, err := New(ctx, Config{
-		AllowedDomains: []string{"example.com"},
-		DeniedDomains:  []string{"denied.example.com"},
+		Network: NetworkConfig{
+			AllowedDomains: []string{"example.com"},
+			DeniedDomains:  []string{"denied.example.com"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -310,7 +250,7 @@ func TestWithAskCallback_InvokedForUnknownDomain(t *testing.T) {
 
 	asked := make(chan AskParams, 1)
 	sb, err := New(ctx, Config{
-		AllowedDomains: []string{"example.com"},
+		Network: NetworkConfig{AllowedDomains: []string{"example.com"}},
 	}, WithAskCallback(func(params AskParams) bool {
 		asked <- params
 		return true // allow it
@@ -349,7 +289,7 @@ func TestClose_CleansUpResources(t *testing.T) {
 	ctx := context.Background()
 
 	sb, err := New(ctx, Config{
-		AllowedDomains: []string{"example.com"},
+		Network: NetworkConfig{AllowedDomains: []string{"example.com"}},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -373,7 +313,7 @@ func TestNew_InvalidConfigReturnsError(t *testing.T) {
 
 	// Invalid domain pattern.
 	_, err := New(ctx, Config{
-		AllowedDomains: []string{"http://bad-url.com/path"},
+		Network: NetworkConfig{AllowedDomains: []string{"http://bad-url.com/path"}},
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid domain pattern")
@@ -385,7 +325,7 @@ func TestCommand_MultipleCommandsOnSameSandbox(t *testing.T) {
 	ctx := context.Background()
 
 	sb, err := New(ctx, Config{
-		AllowedDomains: []string{"example.com"},
+		Network: NetworkConfig{AllowedDomains: []string{"example.com"}},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
