@@ -27,7 +27,8 @@ type AskParams struct {
 type AskCallback func(params AskParams) bool
 
 type newOptions struct {
-	ask AskCallback
+	ask   AskCallback
+	debug bool
 }
 
 // Option configures optional SDK behavior when creating a sandbox.
@@ -40,9 +41,16 @@ func WithAskCallback(callback AskCallback) Option {
 	}
 }
 
+// WithDebug enables debug logging to stderr.
+func WithDebug() Option {
+	return func(o *newOptions) {
+		o.debug = true
+	}
+}
+
 type manager interface {
-	Initialize(ctx context.Context, runtimeConfig srt.SandboxRuntimeConfig, sandboxAskCallback srt.SandboxAskCallback) error
-	WrapWithSandbox(ctx context.Context, command, binShell string, customConfig *srt.SandboxRuntimeConfig) (string, error)
+	Initialize(ctx context.Context, runtimeConfig Config, sandboxAskCallback srt.SandboxAskCallback) error
+	WrapWithSandbox(ctx context.Context, command, binShell string, customConfig *Config) (string, error)
 	Reset(ctx context.Context) error
 }
 
@@ -67,13 +75,13 @@ type Sandbox struct {
 // Returns an error if the platform is unsupported or required dependencies
 // are missing (bwrap, socat, rg on Linux).
 func New(ctx context.Context, cfg Config, opts ...Option) (*Sandbox, error) {
-	if cfg.Debug {
-		os.Setenv("SRT_DEBUG", "1")
-	}
-
 	resolved := newOptions{}
 	for _, o := range opts {
 		o(&resolved)
+	}
+
+	if resolved.debug {
+		os.Setenv("SRT_DEBUG", "1")
 	}
 
 	var ask srt.SandboxAskCallback
@@ -84,7 +92,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Sandbox, error) {
 	}
 
 	m := newManager()
-	if err := m.Initialize(ctx, cfg.toInternal(), ask); err != nil {
+	if err := m.Initialize(ctx, cfg, ask); err != nil {
 		return nil, err
 	}
 
@@ -147,7 +155,7 @@ func IsSupported(cfg Config) bool {
 	if !m.IsSupportedPlatform() {
 		return false
 	}
-	if err := m.UpdateConfig(cfg.toInternal()); err != nil {
+	if err := m.UpdateConfig(cfg); err != nil {
 		return false
 	}
 	deps := m.CheckDependencies(nil)
