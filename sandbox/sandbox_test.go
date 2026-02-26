@@ -121,7 +121,7 @@ func TestCommand_RunsInsideSandbox(t *testing.T) {
 	}
 	defer sb.Close(ctx)
 
-	cmd, err := sb.Command(ctx, "echo hello-from-sandbox")
+	cmd, err := sb.Command(ctx, "echo", "hello-from-sandbox")
 	if err != nil {
 		t.Fatalf("Command failed: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestCommand_CanReadAllowedFile(t *testing.T) {
 	}
 	defer sb.Close(ctx)
 
-	cmd, err := sb.Command(ctx, "cat "+tmp.Name())
+	cmd, err := sb.Command(ctx, "cat", tmp.Name())
 	if err != nil {
 		t.Fatalf("Command: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestCommand_DeniesWriteOutsideAllowed(t *testing.T) {
 	target := "/tmp/sandbox-denied-write-test-" + t.Name()
 	defer os.Remove(target)
 
-	cmd, err := sb.Command(ctx, "touch "+target)
+	cmd, err := sb.Command(ctx, "touch", target)
 	if err != nil {
 		t.Fatalf("Command: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestCommand_NetworkAllowedDomainWorks(t *testing.T) {
 	}
 	defer sb.Close(ctx)
 
-	cmd, err := sb.Command(ctx, "curl -s -o /dev/null -w '%{http_code}' https://example.com")
+	cmd, err := sb.Command(ctx, "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "https://example.com")
 	if err != nil {
 		t.Fatalf("Command: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestCommand_NetworkDeniedDomainBlocked(t *testing.T) {
 	defer sb.Close(ctx)
 
 	// Connect to a domain NOT in the allowed list — should be blocked by proxy.
-	cmd, err := sb.Command(ctx, "curl -s --max-time 5 https://google.com")
+	cmd, err := sb.Command(ctx, "curl", "-s", "--max-time", "5", "https://google.com")
 	if err != nil {
 		t.Fatalf("Command: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestWithAskCallback_InvokedForUnknownDomain(t *testing.T) {
 	defer sb.Close(ctx)
 
 	// curl a domain not in allowed list — should trigger the ask callback.
-	cmd, err := sb.Command(ctx, "curl -s --max-time 10 -o /dev/null -w '%{http_code}' https://httpbin.org/get")
+	cmd, err := sb.Command(ctx, "curl", "-s", "--max-time", "10", "-o", "/dev/null", "-w", "%{http_code}", "https://httpbin.org/get")
 	if err != nil {
 		t.Fatalf("Command: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestClose_CleansUpResources(t *testing.T) {
 	}
 
 	// After close, Command should fail since the manager is reset.
-	_, err = sb.Command(ctx, "echo post-close")
+	_, err = sb.Command(ctx, "echo", "post-close")
 	if err == nil {
 		t.Fatal("expected Command after Close to fail")
 	}
@@ -370,8 +370,8 @@ func TestCommand_MultipleCommandsOnSameSandbox(t *testing.T) {
 	}
 	defer sb.Close(ctx)
 
-	for i, input := range []string{"echo aaa", "echo bbb", "echo ccc"} {
-		cmd, err := sb.Command(ctx, input)
+	for i, word := range []string{"aaa", "bbb", "ccc"} {
+		cmd, err := sb.Command(ctx, "echo", word)
 		if err != nil {
 			t.Fatalf("Command %d: %v", i, err)
 		}
@@ -384,9 +384,8 @@ func TestCommand_MultipleCommandsOnSameSandbox(t *testing.T) {
 			t.Fatalf("Run %d: %v", i, err)
 		}
 
-		expected := strings.TrimPrefix(input, "echo ")
-		if got := strings.TrimSpace(stdout.String()); got != expected {
-			t.Fatalf("command %d: expected %q, got %q", i, expected, got)
+		if got := strings.TrimSpace(stdout.String()); got != word {
+			t.Fatalf("command %d: expected %q, got %q", i, word, got)
 		}
 	}
 }
