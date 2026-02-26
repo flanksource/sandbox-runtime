@@ -11,6 +11,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/flanksource/sandbox-runtime/internal/srt"
 )
@@ -90,18 +91,42 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Sandbox, error) {
 	return &Sandbox{manager: m}, nil
 }
 
-// Command returns an *exec.Cmd that will execute the given shell command
+// Command returns an *exec.Cmd that will execute name with the given args
 // inside the sandbox. The caller has full control over Stdin, Stdout,
 // Stderr, and process lifecycle (Start/Wait/Run/Output).
 //
 // The returned Cmd uses "sh -c <wrapped>" where <wrapped> is the
 // platform-specific sandboxed command (bwrap on Linux, sandbox-exec on macOS).
-func (s *Sandbox) Command(ctx context.Context, command string) (*exec.Cmd, error) {
-	wrapped, err := s.manager.WrapWithSandbox(ctx, command, "", nil)
+func (s *Sandbox) Command(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, shellQuote(name))
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	wrapped, err := s.manager.WrapWithSandbox(ctx, strings.Join(parts, " "), "", nil)
 	if err != nil {
 		return nil, err
 	}
 	return exec.CommandContext(ctx, "sh", "-c", wrapped), nil
+}
+
+// shellQuote returns a shell-safe version of s for use in "sh -c" commands.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	safe := true
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' || r == '/' || r == ':' || r == '@' || r == '=') {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 // Close tears down proxy servers, network bridges, and temporary state.
