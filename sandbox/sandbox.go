@@ -136,12 +136,18 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
-// IsSupported reports whether the current environment can run a sandbox.
-// It checks the OS platform (macOS or Linux, excluding WSL1) and required
-// dependencies such as ripgrep (and on Linux: bwrap, socat, seccomp helpers).
-func IsSupported() bool {
+// IsSupported reports whether the current environment can run a sandbox
+// with the provided configuration.
+//
+// It checks platform support (macOS or Linux, excluding WSL1), validates
+// config fields, and verifies required dependencies (ripgrep; on Linux:
+// bubblewrap and socat). Missing seccomp helpers are warnings only.
+func IsSupported(cfg Config) bool {
 	m := srt.NewManager()
 	if !m.IsSupportedPlatform() {
+		return false
+	}
+	if err := m.UpdateConfig(cfg.toInternal()); err != nil {
 		return false
 	}
 	deps := m.CheckDependencies(nil)

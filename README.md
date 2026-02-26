@@ -13,21 +13,27 @@ import "github.com/flanksource/sandbox-runtime/sandbox"
 ```
 
 ```go
-sb, err := sandbox.New(sandbox.Config{
+cfg := sandbox.Config{
     AllowedDomains: []string{"github.com", "*.github.com", "*.docker.io"},
     AllowWrite:     []string{"/tmp", "/home/user/project"},
     DenyRead:       []string{"/etc/shadow"},
-}, sandbox.WithAskCallback(func(p sandbox.AskParams) bool {
+}
+
+if !sandbox.IsSupported(cfg) {
+    log.Fatal("sandbox runtime is not supported in this environment")
+}
+
+sb, err := sandbox.New(ctx, cfg, sandbox.WithAskCallback(func(p sandbox.AskParams) bool {
     // Optional fallback decision for hosts not matched by allowed/denied rules.
     return p.Host == "registry.internal.local" && p.Port == 443
 }))
 if err != nil {
     log.Fatal(err)
 }
-defer sb.Close()
+defer sb.Close(ctx)
 
 // Get an *exec.Cmd — full control over stdin/stdout/stderr
-cmd, err := sb.Command(ctx, "curl -s https://github.com")
+cmd, err := sb.Command(ctx, "curl", "-s", "https://github.com")
 if err != nil {
     log.Fatal(err)
 }
@@ -40,10 +46,11 @@ cmd.Run()
 
 |                               |                                                         |
 | ----------------------------- | ------------------------------------------------------- |
-| `sandbox.New(cfg, opts...)`   | Start proxy servers, validate platform dependencies     |
+| `sandbox.IsSupported(cfg)`    | Preflight check for platform + config-aware dependencies |
+| `sandbox.New(ctx, cfg, opts...)` | Start proxy servers, validate platform dependencies |
 | `sandbox.WithAskCallback(fn)` | Dynamic network allow/deny callback for unmatched hosts |
-| `sb.Command(ctx, cmd)`        | Returns `*exec.Cmd` wrapped with bwrap/sandbox-exec     |
-| `sb.Close()`                  | Tear down proxies and clean up                          |
+| `sb.Command(ctx, name, args...)` | Returns `*exec.Cmd` wrapped with bwrap/sandbox-exec |
+| `sb.Close(ctx)`               | Tear down proxies and clean up                          |
 
 ### Config
 
