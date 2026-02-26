@@ -110,6 +110,13 @@ func (s *Sandbox) Command(ctx context.Context, name string, args ...string) (*ex
 	return exec.CommandContext(ctx, "sh", "-c", wrapped), nil
 }
 
+// Close tears down proxy servers, network bridges, and temporary state.
+// Any commands still running when Close is called may lose network access.
+// The provided context controls the shutdown deadline for proxy servers.
+func (s *Sandbox) Close(ctx context.Context) error {
+	return s.manager.Reset(ctx)
+}
+
 // shellQuote returns a shell-safe version of s for use in "sh -c" commands.
 func shellQuote(s string) string {
 	if s == "" {
@@ -129,9 +136,14 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
-// Close tears down proxy servers, network bridges, and temporary state.
-// Any commands still running when Close is called may lose network access.
-// The provided context controls the shutdown deadline for proxy servers.
-func (s *Sandbox) Close(ctx context.Context) error {
-	return s.manager.Reset(ctx)
+// IsSupported reports whether the current environment can run a sandbox.
+// It checks the OS platform (macOS or Linux, excluding WSL1) and required
+// dependencies such as ripgrep (and on Linux: bwrap, socat, seccomp helpers).
+func IsSupported() bool {
+	m := srt.NewManager()
+	if !m.IsSupportedPlatform() {
+		return false
+	}
+	deps := m.CheckDependencies(nil)
+	return len(deps.Errors) == 0
 }
