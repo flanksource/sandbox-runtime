@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/flanksource/commons/logger"
 )
 
 type MacOSSandboxParams struct {
@@ -29,7 +31,7 @@ type MacOSSandboxParams struct {
 func macMandatoryDenyPatterns(allowGitConfig bool) []string {
 	cwd, err := os.Getwd()
 	if err != nil {
-		Debugf("[macOS] failed to get cwd for mandatory deny patterns: %v", err)
+		logger.V(3).Infof("[macOS] failed to get cwd for mandatory deny patterns: %v", err)
 		return []string{}
 	}
 	deny := make([]string, 0, 16)

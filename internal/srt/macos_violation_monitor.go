@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/flanksource/commons/logger"
 )
 
 var macOSLogSessionSuffix = fmt.Sprintf("_%s_SBX", randomHex(5))
@@ -39,16 +41,16 @@ func startMacOSSandboxLogMonitor(callback func(SandboxViolationEvent), ignore ma
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		Debugf("[Sandbox Monitor] failed to get log stream stdout: %v", err)
+		logger.V(4).Infof("[Sandbox Monitor] failed to get log stream stdout: %v", err)
 		return nil
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		Debugf("[Sandbox Monitor] failed to get log stream stderr: %v", err)
+		logger.V(4).Infof("[Sandbox Monitor] failed to get log stream stderr: %v", err)
 		return nil
 	}
 	if err := cmd.Start(); err != nil {
-		Debugf("[Sandbox Monitor] failed to start log stream: %v", err)
+		logger.V(4).Infof("[Sandbox Monitor] failed to start log stream: %v", err)
 		return nil
 	}
 
@@ -59,7 +61,7 @@ func startMacOSSandboxLogMonitor(callback func(SandboxViolationEvent), ignore ma
 	go func() {
 		err := cmd.Wait()
 		if err != nil {
-			Debugf("[Sandbox Monitor] log stream exited with error: %v", err)
+			logger.V(4).Infof("[Sandbox Monitor] log stream exited with error: %v", err)
 		}
 		close(monitor.done)
 	}()
@@ -122,7 +124,7 @@ func (m *macOSSandboxLogMonitor) consumeLog(r io.Reader, callback func(SandboxVi
 	}
 
 	if err := scanner.Err(); err != nil {
-		Debugf("[Sandbox Monitor] error reading log stream: %v", err)
+		logger.V(4).Infof("[Sandbox Monitor] error reading log stream: %v", err)
 	}
 }
 
@@ -134,7 +136,7 @@ func (m *macOSSandboxLogMonitor) consumeStderr(r io.Reader) {
 		if line == "" {
 			continue
 		}
-		Debugf("[Sandbox Monitor] log stream stderr: %s", line)
+		logger.V(4).Infof("[Sandbox Monitor] log stream stderr: %s", line)
 	}
 }
 

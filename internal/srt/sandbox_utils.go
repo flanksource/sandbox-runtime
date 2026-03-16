@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/flanksource/commons/logger"
 )
 
 var DefaultPassthroughEnv = []string{
@@ -194,7 +196,7 @@ func ExpandGlobPattern(globPath string) []string {
 		staticPrefix = normalizedPattern[:idx]
 	}
 	if staticPrefix == "" || staticPrefix == string(filepath.Separator) {
-		Debugf("[Sandbox] Glob pattern too broad, skipping: %s", globPath)
+		logger.V(3).Infof("[Sandbox] Glob pattern too broad, skipping: %s", globPath)
 		return []string{}
 	}
 
@@ -205,14 +207,14 @@ func ExpandGlobPattern(globPath string) []string {
 		baseDir = filepath.Dir(staticPrefix)
 	}
 	if baseDir == "" || !fileExistsOrDir(baseDir) {
-		Debugf("[Sandbox] Base directory for glob does not exist: %s", baseDir)
+		logger.V(3).Infof("[Sandbox] Base directory for glob does not exist: %s", baseDir)
 		return []string{}
 	}
 
 	regexPattern := GlobToRegex(filepath.ToSlash(normalizedPattern))
 	re, err := regexp.Compile(regexPattern)
 	if err != nil {
-		Debugf("[Sandbox] Invalid glob regex for %s: %v", globPath, err)
+		logger.V(3).Infof("[Sandbox] Invalid glob regex for %s: %v", globPath, err)
 		return []string{}
 	}
 

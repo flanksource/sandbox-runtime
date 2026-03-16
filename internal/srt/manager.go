@@ -10,6 +10,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/flanksource/commons/logger"
 )
 
 type hostNetworkManagerContext struct {
@@ -51,7 +53,7 @@ func (m *Manager) registerCleanup(ctx context.Context) {
 			case <-sigCh:
 				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 				if err := m.Reset(cleanupCtx); err != nil {
-					Debugf("Cleanup failed in registerCleanup: %v", err)
+					logger.V(4).Infof("Cleanup failed in registerCleanup: %v", err)
 				}
 				cancel()
 			case <-m.cleanupStopChan:
@@ -87,7 +89,7 @@ func (m *Manager) Initialize(ctx context.Context, runtimeConfig SandboxRuntimeCo
 	httpPort := 0
 	if runtimeConfig.Network.HTTPProxyPort != nil {
 		httpPort = *runtimeConfig.Network.HTTPProxyPort
-		Debugf("Using external HTTP proxy on port %d", httpPort)
+		logger.Debugf("Using external HTTP proxy on port %d", httpPort)
 	} else {
 		httpServer, port, err := StartHTTPProxyServer(ctx, HTTPProxyOptions{
 			Filter: func(port int, host string) bool {
@@ -107,7 +109,7 @@ func (m *Manager) Initialize(ctx context.Context, runtimeConfig SandboxRuntimeCo
 	socksPort := 0
 	if runtimeConfig.Network.SocksProxyPort != nil {
 		socksPort = *runtimeConfig.Network.SocksProxyPort
-		Debugf("Using external SOCKS proxy on port %d", socksPort)
+		logger.Debugf("Using external SOCKS proxy on port %d", socksPort)
 	} else {
 		socksServer, port, err := StartSocksProxyServer(SocksProxyOptions{
 			Filter: func(port int, host string) bool {
@@ -220,7 +222,7 @@ func (m *Manager) GetFsReadConfig() FsReadRestrictionConfig {
 		stripped := RemoveTrailingGlobSuffix(p)
 		if GetPlatform() == PlatformLinux && ContainsGlobChars(stripped) {
 			expanded := ExpandGlobPattern(p)
-			Debugf("[Sandbox] expanded glob denyRead pattern %q to %d paths on Linux", p, len(expanded))
+			logger.V(3).Infof("[Sandbox] expanded glob denyRead pattern %q to %d paths on Linux", p, len(expanded))
 			denyPaths = append(denyPaths, expanded...)
 			continue
 		}
@@ -240,7 +242,7 @@ func (m *Manager) GetFsWriteConfig() FsWriteRestrictionConfig {
 	for _, p := range m.config.Filesystem.AllowWrite {
 		stripped := RemoveTrailingGlobSuffix(p)
 		if GetPlatform() == PlatformLinux && ContainsGlobChars(stripped) {
-			Debugf("[Sandbox] skipping glob allowWrite pattern on Linux: %s", p)
+			logger.V(3).Infof("[Sandbox] skipping glob allowWrite pattern on Linux: %s", p)
 			continue
 		}
 		allowPaths = append(allowPaths, stripped)
@@ -250,7 +252,7 @@ func (m *Manager) GetFsWriteConfig() FsWriteRestrictionConfig {
 	for _, p := range m.config.Filesystem.DenyWrite {
 		stripped := RemoveTrailingGlobSuffix(p)
 		if GetPlatform() == PlatformLinux && ContainsGlobChars(stripped) {
-			Debugf("[Sandbox] skipping glob denyWrite pattern on Linux: %s", p)
+			logger.V(3).Infof("[Sandbox] skipping glob denyWrite pattern on Linux: %s", p)
 			continue
 		}
 		denyPaths = append(denyPaths, stripped)
@@ -525,13 +527,13 @@ func (m *Manager) filterNetworkRequest(port int, host string) bool {
 
 	for _, denied := range cfg.Network.DeniedDomains {
 		if matchesDomainPattern(host, denied) {
-			Debugf("Denied by config rule: %s:%d", host, port)
+			logger.V(3).Infof("Denied by config rule: %s:%d", host, port)
 			return false
 		}
 	}
 	for _, allowed := range cfg.Network.AllowedDomains {
 		if matchesDomainPattern(host, allowed) {
-			Debugf("Allowed by config rule: %s:%d", host, port)
+			logger.V(3).Infof("Allowed by config rule: %s:%d", host, port)
 			return true
 		}
 	}

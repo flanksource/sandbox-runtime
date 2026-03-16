@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/flanksource/commons/logger"
 	"github.com/flanksource/sandbox-runtime/internal/srt/presets"
 	"gopkg.in/yaml.v3"
 )
@@ -75,7 +76,7 @@ func LoadProfiles(cwd string) (*SandboxRuntimeConfig, error) {
 	}
 
 	for _, f := range loadedFiles {
-		Debugf("Loaded profile: %s", f)
+		logger.Tracef("Loaded profile: %s", f)
 	}
 
 	merged := MergeProfiles(layers...)

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/flanksource/commons/logger"
 )
 
 type HTTPProxyOptions struct {
@@ -35,7 +37,7 @@ func StartHTTPProxyServer(ctx context.Context, opts HTTPProxyOptions) (*HTTPProx
 
 	go func() {
 		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
-			Debugf("HTTP proxy serve error: %v", err)
+			logger.V(4).Infof("HTTP proxy serve error: %v", err)
 		}
 	}()
 
@@ -45,7 +47,7 @@ func StartHTTPProxyServer(ctx context.Context, opts HTTPProxyOptions) (*HTTPProx
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			Debugf("HTTP proxy shutdown error: %v", err)
+			logger.V(4).Infof("HTTP proxy shutdown error: %v", err)
 		}
 	}()
 

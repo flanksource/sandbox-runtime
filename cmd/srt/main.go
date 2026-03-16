@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/flanksource/commons/logger"
 	"github.com/flanksource/sandbox-runtime/internal/srt"
 )
 
@@ -49,13 +50,13 @@ func main() {
 	}
 
 	if opts.debug {
-		_ = os.Setenv("SRT_DEBUG", "1")
+		logger.StandardLogger().SetLogLevel(1)
 	}
 
 	var runtimeConfig *srt.SandboxRuntimeConfig
 
 	if opts.settings != "" {
-		srt.Debugf("Loading config from: %s", opts.settings)
+		logger.Debugf("Loading config from: %s", opts.settings)
 		runtimeConfig, err = srt.LoadConfig(opts.settings)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
@@ -90,11 +91,11 @@ func main() {
 	if runtimeConfig == nil {
 		cfg := srt.DefaultConfig()
 		runtimeConfig = &cfg
-		srt.Debugf("No valid config found, using default config")
+		logger.Debugf("No valid config found, using default config")
 	}
 
 	if data, err := json.MarshalIndent(runtimeConfig, "", "  "); err == nil {
-		srt.Debugf("Resolved config:\n%s", string(data))
+		logger.Tracef("Resolved config:\n%s", string(data))
 	}
 
 	if err := srt.SandboxManager.Initialize(ctx, *runtimeConfig, nil); err != nil {
@@ -109,10 +110,10 @@ func main() {
 	command := ""
 	if opts.commandMode != "" {
 		command = opts.commandMode
-		srt.Debugf("Command string mode (-c): %s", command)
+		logger.Debugf("Command string mode (-c): %s", command)
 	} else if len(commandArgs) > 0 {
 		command = strings.Join(commandArgs, " ")
-		srt.Debugf("Original command: %s", command)
+		logger.Debugf("Original command: %s", command)
 	} else {
 		fmt.Fprintln(os.Stderr, "Error: No command specified. Use -c <command> or provide command arguments.")
 		os.Exit(1)
@@ -194,6 +195,8 @@ func parseArgs(args []string) (options, []string, error) {
 			return opts, nil, nil
 		case "-d", "--debug":
 			opts.debug = true
+		case "-v", "-vv", "-vvv", "-vvvv":
+			// handled by commons/logger init
 		case "-s", "--settings":
 			i++
 			if i >= len(args) {
@@ -235,7 +238,7 @@ func parseArgs(args []string) (options, []string, error) {
 func startControlFDReader(fd int) {
 	f := os.NewFile(uintptr(fd), fmt.Sprintf("control-fd-%d", fd))
 	if f == nil {
-		srt.Debugf("Failed to open control fd %d", fd)
+		logger.Debugf("Failed to open control fd %d", fd)
 		return
 	}
 	go func() {
@@ -248,20 +251,20 @@ func startControlFDReader(fd int) {
 			}
 			cfg, err := srt.LoadConfigFromString(line)
 			if err != nil {
-				srt.Debugf("Invalid config on control fd (ignored): %s (%v)", line, err)
+				logger.Debugf("Invalid config on control fd (ignored): %s (%v)", line, err)
 				continue
 			}
 			if cfg == nil {
 				continue
 			}
 			if err := srt.SandboxManager.UpdateConfig(*cfg); err != nil {
-				srt.Debugf("Failed to update config from control fd: %v", err)
+				logger.Debugf("Failed to update config from control fd: %v", err)
 				continue
 			}
-			srt.Debugf("Config updated from control fd")
+			logger.Debugf("Config updated from control fd")
 		}
 		if err := scanner.Err(); err != nil {
-			srt.Debugf("Control fd error: %v", err)
+			logger.Debugf("Control fd error: %v", err)
 		}
 	}()
 }
@@ -286,7 +289,8 @@ Subcommands:
   test-sandbox <fixture-paths...>   Run fixture-based sandbox tests
 
 Options:
-  -d, --debug                enable debug logging
+  -v                         increase verbosity (-v, -vv, -vvv, -vvvv)
+  -d, --debug                alias for -v
   -s, --settings <path>      path to config file (default: ~/.srt-settings.json)
   -c <command>               run command string directly
   -p, --preset <name>        enable a preset (repeatable, e.g. -p golang -p git)
