@@ -1,0 +1,5 @@
+filesystem:
+  denyWrite:
+    - $HOME/.zshrc
+    - $HOME/.bashrc
+    - $HOME/.config/fish

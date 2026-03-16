@@ -72,6 +72,10 @@ type Config struct {
     DenyRead       []string
     AllowGitConfig bool
 
+    // Environment
+    Env            map[string]string  // explicit key=value vars injected into sandbox
+    PassthroughEnv []string           // host env var names passed through if set
+
     // Runtime behavior
     IgnoreViolations             map[string][]string
     EnableWeakerNestedSandbox    bool
@@ -101,6 +105,10 @@ Usage:
   srt [options] [command ...]
   srt -c <command>
 
+Subcommands:
+  profile <subcommand>              Manage sandbox profiles and presets
+  test-sandbox <fixture-paths...>   Run fixture-based sandbox tests
+
 Options:
   -d, --debug                enable debug logging
   -s, --settings <path>      path to config file (default: ~/.srt-settings.json)
@@ -109,9 +117,137 @@ Options:
   -h, --help                 show help
 ```
 
-### CLI Config
+### Profiles and Presets
 
-The CLI uses a JSON config file (see `config.json` for an example):
+Instead of writing a full JSON config, you can use `.sandbox.yaml` profile files with built-in presets.
+
+#### Full `.sandbox.yaml` Reference
+
+```yaml
+# ─── Presets ──────────────────────────────────────────────────────────
+# Include built-in presets by name. Each preset adds network domains,
+# filesystem write paths, env vars, and passthroughEnv for its ecosystem.
+#
+# Available: golang, npm, python, rust, docker, git, ssh,
+#            aws, gcp, azure, homebrew, ide, shell
+allow:
+  - golang
+  - git
+
+# ─── Network ─────────────────────────────────────────────────────────
+network:
+  # Domains the sandbox can reach (merged with preset domains)
+  allowedDomains:
+    - custom-registry.example.com
+    - "*.internal.corp"            # wildcard subdomains
+
+  # Domains explicitly blocked (checked before allowedDomains)
+  deniedDomains:
+    - evil.example.com
+
+  # Allow specific unix sockets inside the sandbox
+  allowUnixSockets:
+    - /var/run/docker.sock
+
+  # Allow ALL unix sockets (overrides allowUnixSockets)
+  allowAllUnixSockets: false
+
+  # Allow binding to localhost ports (for local dev servers)
+  allowLocalBinding: false
+
+  # Use external proxy instead of built-in (optional)
+  # httpProxyPort: 8080
+  # socksProxyPort: 1080
+
+  # Route matching domains through a MITM proxy unix socket (optional)
+  # mitmProxy:
+  #   socketPath: /tmp/mitmproxy.sock
+  #   domains: ["api.example.com"]
+
+# ─── Filesystem ──────────────────────────────────────────────────────
+filesystem:
+  # Paths writable inside the sandbox (merged with preset paths)
+  # Supports ~ expansion and $ENV_VAR substitution
+  allowWrite:
+    - .                            # current working directory
+    - /tmp
+    - $HOME/.cache
+
+  # Paths denied for reading (blocked even though fs is readable by default)
+  denyRead:
+    - $HOME/.ssh
+    - $HOME/.aws/credentials
+
+  # Paths denied for writing within allowWrite paths
+  denyWrite:
+    - .env
+    - "**/.env.local"
+
+  # Allow reading/writing .git/config (blocked by default)
+  allowGitConfig: false
+
+# ─── Environment ─────────────────────────────────────────────────────
+# Explicit key=value env vars injected into sandbox (overrides passthrough)
+env:
+  GONOSUMCHECK: "*"
+  NODE_TLS_REJECT_UNAUTHORIZED: "0"
+
+# Host env var names to pass through into sandbox if set
+# (merged with preset passthroughEnv and built-in defaults like
+#  TERM, HOME, USER, SHELL, PATH, LANG, EDITOR, XDG_*)
+passthroughEnv:
+  - MY_CUSTOM_TOKEN
+  - DATABASE_URL
+
+# ─── Violation Handling ──────────────────────────────────────────────
+# Suppress sandbox violation logs for specific commands
+ignoreViolations:
+  curl:                            # command name
+    - network                      # violation category to ignore
+  git:
+    - network
+    - filesystem
+
+# ─── Runtime Behavior ────────────────────────────────────────────────
+# Allow pseudo-terminal allocation (needed for interactive commands)
+allowPty: false
+
+# Weaken nested sandbox restrictions (needed for docker-in-sandbox)
+enableWeakerNestedSandbox: false
+
+# Allow trustd.agent mach-lookup on macOS (needed for Go TLS verification)
+enableWeakerNetworkIsolation: false
+```
+
+#### Minimal Example
+
+```yaml
+# .sandbox.yaml — typical Go project
+allow: [golang, git]
+```
+
+Use `srt profile show <name>` to inspect what any preset includes.
+
+```bash
+srt profile list               # list available presets
+srt profile show golang        # show preset details
+srt profile resolve            # show final merged config for cwd
+srt profile init               # detect project type, suggest .sandbox.yaml
+```
+
+### Environment Variables
+
+Sandboxed commands run in a clean environment. Environment variables are injected in three layers (later layers override earlier ones):
+
+1. **Default passthrough** — a safe set of host env vars (`TERM`, `HOME`, `USER`, `SHELL`, `PATH`, `LANG`, `EDITOR`, `XDG_*`, etc.) are passed through automatically if set on the host.
+
+2. **Preset/profile passthrough** — presets declare additional env var names to pass through. For example, the `golang` preset passes through `GOPATH`, `GOMODCACHE`, `GOROOT`, `GOPROXY`, `GOPRIVATE`, and `GOBIN`. You can also add custom names via `passthroughEnv` in `.sandbox.yaml`.
+
+3. **Explicit env** — `env` key-value pairs (from presets or `.sandbox.yaml`) are injected directly and override any passthrough value for the same key.
+
+### CLI Config (JSON)
+
+The CLI also supports a JSON config file (`~/.srt-settings.json`):
 
 ```json
 {
@@ -125,6 +261,10 @@ The CLI uses a JSON config file (see `config.json` for an example):
     "denyRead": [],
     "allowWrite": ["/tmp"],
     "denyWrite": []
+  },
+  "passthroughEnv": ["MY_CUSTOM_VAR"],
+  "env": {
+    "GONOSUMCHECK": "*"
   }
 }
 ```

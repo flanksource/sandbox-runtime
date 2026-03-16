@@ -22,6 +22,8 @@ type MacOSSandboxParams struct {
 	AllowGitConfig               bool
 	EnableWeakerNetworkIsolation bool
 	BinShell                     string
+	Env                          map[string]string
+	PassthroughEnv               []string
 }
 
 func macMandatoryDenyPatterns(allowGitConfig bool) []string {
@@ -410,8 +412,8 @@ func WrapCommandWithSandboxMacOS(params MacOSSandboxParams) (string, error) {
 	logTag := generateMacOSSandboxLogTag(params.Command)
 	profile := generateMacOSSandboxProfile(params, logTag)
 
-	proxyEnv := GenerateProxyEnvVars(params.HTTPProxyPort, params.SOCKSProxyPort)
-	args := []string{"env"}
+	proxyEnv := GenerateProxyEnvVars(params.HTTPProxyPort, params.SOCKSProxyPort, params.PassthroughEnv, params.Env)
+	args := []string{"env", "-i"}
 	args = append(args, proxyEnv...)
 	args = append(args, "sandbox-exec", "-p", profile, shellPath, "-c", params.Command)
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,11 +22,20 @@ type options struct {
 	controlFD   int
 	hasControl  bool
 	help        bool
+	presets     []string
 }
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	if len(os.Args) > 1 && os.Args[1] == "test-sandbox" {
+		os.Exit(runTestSandbox(os.Args[2:]))
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "profile" {
+		os.Exit(runProfile(os.Args[2:]))
+	}
 
 	opts, commandArgs, err := parseArgs(os.Args[1:])
 	if err != nil {
@@ -42,19 +52,49 @@ func main() {
 		_ = os.Setenv("SRT_DEBUG", "1")
 	}
 
-	configPath := opts.settings
-	if configPath == "" {
-		configPath = defaultConfigPath()
+	var runtimeConfig *srt.SandboxRuntimeConfig
+
+	if opts.settings != "" {
+		srt.Debugf("Loading config from: %s", opts.settings)
+		runtimeConfig, err = srt.LoadConfig(opts.settings)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		}
+	} else {
+		cwd, _ := os.Getwd()
+		runtimeConfig, err = srt.LoadProfiles(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: loading profiles: %v\n", err)
+		}
+		if runtimeConfig == nil {
+			runtimeConfig, err = srt.LoadConfig(defaultConfigPath())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			}
+		}
 	}
 
-	runtimeConfig, err := srt.LoadConfig(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	if len(opts.presets) > 0 {
+		presetConfig, err := srt.ResolveProfile(&srt.Profile{Allow: opts.presets})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error resolving presets: %v\n", err)
+			os.Exit(1)
+		}
+		if runtimeConfig != nil {
+			runtimeConfig.MergeFrom(presetConfig)
+		} else {
+			runtimeConfig = presetConfig
+		}
 	}
+
 	if runtimeConfig == nil {
 		cfg := srt.DefaultConfig()
 		runtimeConfig = &cfg
-		srt.Debugf("No valid config found at %s, using default config", configPath)
+		srt.Debugf("No valid config found, using default config")
+	}
+
+	if data, err := json.MarshalIndent(runtimeConfig, "", "  "); err == nil {
+		srt.Debugf("Resolved config:\n%s", string(data))
 	}
 
 	if err := srt.SandboxManager.Initialize(ctx, *runtimeConfig, nil); err != nil {
@@ -166,6 +206,12 @@ func parseArgs(args []string) (options, []string, error) {
 				return opts, nil, fmt.Errorf("missing value for -c")
 			}
 			opts.commandMode = args[i]
+		case "-p", "--preset":
+			i++
+			if i >= len(args) {
+				return opts, nil, fmt.Errorf("missing value for %s", a)
+			}
+			opts.presets = append(opts.presets, args[i])
 		case "--control-fd":
 			i++
 			if i >= len(args) {
@@ -229,16 +275,96 @@ func defaultConfigPath() string {
 }
 
 func printHelp() {
-	fmt.Println("srt - Run commands in a sandbox with network and filesystem restrictions")
-	fmt.Println()
-	fmt.Println("Usage:")
-	fmt.Println("  srt [options] [command ...]")
-	fmt.Println("  srt -c <command>")
-	fmt.Println()
-	fmt.Println("Options:")
-	fmt.Println("  -d, --debug                enable debug logging")
-	fmt.Println("  -s, --settings <path>      path to config file (default: ~/.srt-settings.json)")
-	fmt.Println("  -c <command>               run command string directly")
-	fmt.Println("  --control-fd <fd>          read config updates from fd (JSON lines)")
-	fmt.Println("  -h, --help                 show help")
+	fmt.Print(`srt - Run commands in a sandbox with network and filesystem restrictions
+
+Usage:
+  srt [options] [command ...]
+  srt -c <command>
+
+Subcommands:
+  profile <subcommand>              Manage sandbox profiles and presets
+  test-sandbox <fixture-paths...>   Run fixture-based sandbox tests
+
+Options:
+  -d, --debug                enable debug logging
+  -s, --settings <path>      path to config file (default: ~/.srt-settings.json)
+  -c <command>               run command string directly
+  -p, --preset <name>        enable a preset (repeatable, e.g. -p golang -p git)
+  --control-fd <fd>          read config updates from fd (JSON lines)
+  -h, --help                 show help
+
+Profile commands:
+  srt profile list           list available presets
+  srt profile show <name>    show expanded preset (network, fs, env, passthroughEnv)
+  srt profile resolve        show final merged config for cwd (.sandbox.yaml)
+  srt profile init           detect project type, suggest .sandbox.yaml
+
+Environment:
+  Sandboxed commands receive a clean environment. Host env vars are injected in
+  three layers (later layers override):
+    1. Default passthrough: TERM, HOME, USER, SHELL, PATH, LANG, EDITOR, XDG_*, etc.
+    2. Preset/profile passthroughEnv: e.g. golang passes GOPATH, GOMODCACHE, GOROOT
+    3. Explicit env: key=value pairs from presets or .sandbox.yaml override all
+
+Presets:
+  golang, npm, nextjs, playwright, python, rust, docker, git, ssh, aws, gcp, azure, homebrew, ide, shell
+
+Full .sandbox.yaml reference:
+
+  # ─── Presets ──────────────────────────────────────────────────────
+  # Include built-in presets by name. Each adds network domains,
+  # filesystem paths, env vars, and passthroughEnv for its ecosystem.
+  allow:
+    - golang
+    - git
+
+  # ─── Network ─────────────────────────────────────────────────────
+  network:
+    allowedDomains:                    # domains the sandbox can reach
+      - custom-registry.example.com
+      - "*.internal.corp"              # wildcard subdomains
+    deniedDomains:                     # explicitly blocked (checked first)
+      - evil.example.com
+    allowUnixSockets:                  # specific unix sockets to allow
+      - /var/run/docker.sock
+    allowAllUnixSockets: false         # allow ALL unix sockets
+    allowLocalBinding: false           # bind to localhost ports
+    # httpProxyPort: 8080              # use external HTTP proxy
+    # socksProxyPort: 1080             # use external SOCKS proxy
+    # mitmProxy:                       # route domains through MITM socket
+    #   socketPath: /tmp/mitmproxy.sock
+    #   domains: ["api.example.com"]
+
+  # ─── Filesystem ──────────────────────────────────────────────────
+  filesystem:
+    allowWrite:                        # writable paths (~ and $ENV supported)
+      - .                              # current working directory
+      - /tmp
+      - $HOME/.cache
+    denyRead:                          # block reading these paths
+      - $HOME/.ssh
+      - $HOME/.aws/credentials
+    denyWrite:                         # block writing within allowWrite
+      - .env
+      - "**/.env.local"
+    allowGitConfig: false              # allow .git/config access
+
+  # ─── Environment ─────────────────────────────────────────────────
+  env:                                 # explicit key=value (overrides passthrough)
+    GONOSUMCHECK: "*"
+    NODE_TLS_REJECT_UNAUTHORIZED: "0"
+  passthroughEnv:                      # host env var names to forward if set
+    - MY_CUSTOM_TOKEN
+    - DATABASE_URL
+
+  # ─── Violation Handling ──────────────────────────────────────────
+  ignoreViolations:                    # suppress violation logs per command
+    curl: [network]
+    git: [network, filesystem]
+
+  # ─── Runtime Behavior ───────────────────────────────────────────
+  allowPty: false                      # pseudo-terminal allocation
+  enableWeakerNestedSandbox: false     # needed for docker-in-sandbox
+  enableWeakerNetworkIsolation: false  # macOS: allow trustd.agent for Go TLS
+`)
 }

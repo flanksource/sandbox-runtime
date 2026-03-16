@@ -54,6 +54,8 @@ type LinuxSandboxParams struct {
 	RipgrepConfig             *RipgrepConfig
 	MandatoryDenySearchDepth  int
 	SeccompConfig             *SeccompConfig
+	Env                       map[string]string
+	PassthroughEnv            []string
 }
 
 func GetLinuxDependencyStatus(seccompConfig *SeccompConfig) LinuxDependencyStatus {
@@ -479,7 +481,7 @@ func WrapCommandWithSandboxLinux(ctx context.Context, params LinuxSandboxParams)
 				"--bind", params.SOCKSSocketPath, params.SOCKSSocketPath,
 			)
 
-			for _, envKV := range GenerateProxyEnvVars(3128, 1080) {
+			for _, envKV := range GenerateProxyEnvVars(3128, 1080, params.PassthroughEnv, params.Env) {
 				parts := strings.SplitN(envKV, "=", 2)
 				if len(parts) == 2 {
 					bwrapArgs = append(bwrapArgs, "--setenv", parts[0], parts[1])

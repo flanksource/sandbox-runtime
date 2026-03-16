@@ -16,6 +16,9 @@ dist: build
 	@cp $(BIN_DIR)/$(APP_NAME) dist/bin/$(APP_NAME)
 	@cp -R third_party/seccomp dist/third_party/
 
+install: build
+	@cp $(BIN_DIR)/$(APP_NAME) /usr/local/bin
+
 run:
 	$(GO) run $(MAIN_PKG) $(ARGS)
 
@@ -39,6 +42,9 @@ vendor-sync:
 
 seccomp:
 	./scripts/build-seccomp-binaries.sh
+
+test-sandbox: build
+	$(BIN_DIR)/$(APP_NAME) test-sandbox test/fixtures/**/*.md
 
 check: fmt-check vet test
 

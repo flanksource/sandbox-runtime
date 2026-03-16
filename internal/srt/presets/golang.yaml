@@ -1,0 +1,22 @@
+network:
+  allowedDomains:
+    - proxy.golang.org
+    - sum.golang.org
+    - "*.golang.org"
+    - storage.googleapis.com
+filesystem:
+  allowWrite:
+    - $GOPATH
+    - $GOMODCACHE
+env:
+  GONOSUMCHECK: "*"
+  GOFLAGS: "-insecure"
+  SSL_CERT_FILE: ""
+  GONOSUMDB: "*"
+passthroughEnv:
+  - GOPATH
+  - GOMODCACHE
+  - GOROOT
+  - GOPROXY
+  - GOPRIVATE
+  - GOBIN

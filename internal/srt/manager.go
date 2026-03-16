@@ -427,6 +427,8 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 			AllowGitConfig:               active.Filesystem.AllowGitConfig,
 			EnableWeakerNetworkIsolation: active.EnableWeakerNetworkIsolation,
 			BinShell:                     binShell,
+			Env:                          active.Env,
+			PassthroughEnv:               active.PassthroughEnv,
 		})
 	case PlatformLinux:
 		return WrapCommandWithSandboxLinux(ctx, LinuxSandboxParams{
@@ -445,6 +447,8 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 			RipgrepConfig:             active.Ripgrep,
 			MandatoryDenySearchDepth:  active.MandatoryDenySearchDepth,
 			SeccompConfig:             active.Seccomp,
+			Env:                       active.Env,
+			PassthroughEnv:            active.PassthroughEnv,
 		})
 	default:
 		return "", fmt.Errorf("sandbox configuration is not supported on platform: %s", GetPlatform())
@@ -603,6 +607,17 @@ func mergeRuntimeConfig(base *SandboxRuntimeConfig, override *SandboxRuntimeConf
 	}
 	if override.Filesystem.AllowGitConfig {
 		merged.Filesystem.AllowGitConfig = true
+	}
+
+	if override.Env != nil {
+		copiedEnv := make(map[string]string, len(override.Env))
+		for k, v := range override.Env {
+			copiedEnv[k] = v
+		}
+		merged.Env = copiedEnv
+	}
+	if override.PassthroughEnv != nil {
+		merged.PassthroughEnv = append([]string{}, override.PassthroughEnv...)
 	}
 
 	if override.IgnoreViolations != nil {

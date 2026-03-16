@@ -10,6 +10,19 @@ import (
 	"strings"
 )
 
+var DefaultPassthroughEnv = []string{
+	// Terminal/display
+	"TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
+	// Locale
+	"LANG", "LC_ALL", "LC_CTYPE",
+	// User/system
+	"HOME", "USER", "LOGNAME", "SHELL", "PATH",
+	// Editor
+	"EDITOR", "VISUAL",
+	// XDG
+	"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
+}
+
 var DangerousFiles = []string{
 	".gitconfig",
 	".gitmodules",
@@ -20,6 +33,7 @@ var DangerousFiles = []string{
 	".profile",
 	".ripgreprc",
 	".mcp.json",
+	".sandbox.yaml",
 }
 
 func GetDangerousDirectories() []string {
@@ -235,69 +249,94 @@ func GetDefaultWritePaths() []string {
 	}
 }
 
-func GenerateProxyEnvVars(httpProxyPort, socksProxyPort int) []string {
+func GenerateProxyEnvVars(httpProxyPort, socksProxyPort int, passthroughEnv []string, extraEnv ...map[string]string) []string {
 	tmpdir := os.Getenv("CLAUDE_TMPDIR")
 	if tmpdir == "" {
 		tmpdir = "/tmp/claude"
 	}
 	envVars := []string{"SANDBOX_RUNTIME=1", "TMPDIR=" + tmpdir}
 
-	if httpProxyPort == 0 && socksProxyPort == 0 {
-		return envVars
-	}
+	if httpProxyPort != 0 || socksProxyPort != 0 {
+		noProxy := strings.Join([]string{
+			"localhost",
+			"127.0.0.1",
+			"::1",
+			"*.local",
+			".local",
+			"169.254.0.0/16",
+			"10.0.0.0/8",
+			"172.16.0.0/12",
+			"192.168.0.0/16",
+		}, ",")
+		envVars = append(envVars, "NO_PROXY="+noProxy, "no_proxy="+noProxy)
 
-	noProxy := strings.Join([]string{
-		"localhost",
-		"127.0.0.1",
-		"::1",
-		"*.local",
-		".local",
-		"169.254.0.0/16",
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-	}, ",")
-	envVars = append(envVars, "NO_PROXY="+noProxy, "no_proxy="+noProxy)
-
-	if httpProxyPort != 0 {
-		httpProxy := "http://localhost:" + itoa(httpProxyPort)
-		envVars = append(envVars,
-			"HTTP_PROXY="+httpProxy,
-			"HTTPS_PROXY="+httpProxy,
-			"http_proxy="+httpProxy,
-			"https_proxy="+httpProxy,
-		)
-	}
-
-	if socksProxyPort != 0 {
-		socksProxy := "socks5h://localhost:" + itoa(socksProxyPort)
-		envVars = append(envVars,
-			"ALL_PROXY="+socksProxy,
-			"all_proxy="+socksProxy,
-			"FTP_PROXY="+socksProxy,
-			"ftp_proxy="+socksProxy,
-			"RSYNC_PROXY=localhost:"+itoa(socksProxyPort),
-			"GRPC_PROXY="+socksProxy,
-			"grpc_proxy="+socksProxy,
-		)
-		if GetPlatform() == PlatformMacOS {
+		if httpProxyPort != 0 {
+			httpProxy := "http://localhost:" + itoa(httpProxyPort)
 			envVars = append(envVars,
-				"GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x localhost:"+itoa(socksProxyPort)+" %h %p'",
+				"HTTP_PROXY="+httpProxy,
+				"HTTPS_PROXY="+httpProxy,
+				"http_proxy="+httpProxy,
+				"https_proxy="+httpProxy,
 			)
 		}
-		if httpProxyPort != 0 {
+
+		if socksProxyPort != 0 {
+			socksProxy := "socks5h://localhost:" + itoa(socksProxyPort)
 			envVars = append(envVars,
-				"DOCKER_HTTP_PROXY=http://localhost:"+itoa(httpProxyPort),
-				"DOCKER_HTTPS_PROXY=http://localhost:"+itoa(httpProxyPort),
-				"CLOUDSDK_PROXY_TYPE=https",
-				"CLOUDSDK_PROXY_ADDRESS=localhost",
-				"CLOUDSDK_PROXY_PORT="+itoa(httpProxyPort),
+				"ALL_PROXY="+socksProxy,
+				"all_proxy="+socksProxy,
+				"FTP_PROXY="+socksProxy,
+				"ftp_proxy="+socksProxy,
+				"RSYNC_PROXY=localhost:"+itoa(socksProxyPort),
+				"GRPC_PROXY="+socksProxy,
+				"grpc_proxy="+socksProxy,
 			)
-		} else {
-			envVars = append(envVars,
-				"DOCKER_HTTP_PROXY=http://localhost:"+itoa(socksProxyPort),
-				"DOCKER_HTTPS_PROXY=http://localhost:"+itoa(socksProxyPort),
-			)
+			if GetPlatform() == PlatformMacOS {
+				envVars = append(envVars,
+					"GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x localhost:"+itoa(socksProxyPort)+" %h %p'",
+				)
+			}
+			if httpProxyPort != 0 {
+				envVars = append(envVars,
+					"DOCKER_HTTP_PROXY=http://localhost:"+itoa(httpProxyPort),
+					"DOCKER_HTTPS_PROXY=http://localhost:"+itoa(httpProxyPort),
+					"CLOUDSDK_PROXY_TYPE=https",
+					"CLOUDSDK_PROXY_ADDRESS=localhost",
+					"CLOUDSDK_PROXY_PORT="+itoa(httpProxyPort),
+				)
+			} else {
+				envVars = append(envVars,
+					"DOCKER_HTTP_PROXY=http://localhost:"+itoa(socksProxyPort),
+					"DOCKER_HTTPS_PROXY=http://localhost:"+itoa(socksProxyPort),
+				)
+			}
+		}
+	}
+
+	// Build set of already-defined keys for dedup
+	setKeys := make(map[string]bool, len(envVars))
+	for _, kv := range envVars {
+		if idx := strings.IndexByte(kv, '='); idx > 0 {
+			setKeys[kv[:idx]] = true
+		}
+	}
+
+	// Passthrough: defaults + caller-specified
+	allPassthrough := mergeStringSlicesDedup(DefaultPassthroughEnv, passthroughEnv)
+	for _, name := range allPassthrough {
+		if setKeys[name] {
+			continue
+		}
+		if val := os.Getenv(name); val != "" {
+			envVars = append(envVars, name+"="+val)
+			setKeys[name] = true
+		}
+	}
+
+	// Explicit env overrides everything
+	for _, m := range extraEnv {
+		for k, v := range m {
+			envVars = append(envVars, k+"="+v)
 		}
 	}
 
