@@ -15,6 +15,7 @@ import (
 var DefaultPassthroughEnv = []string{
 	// Terminal/display
 	"TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
+	"TERMINFO", "GHOSTTY_RESOURCES_DIR",
 	// Locale
 	"LANG", "LC_ALL", "LC_CTYPE",
 	// User/system
@@ -256,7 +257,12 @@ func GenerateProxyEnvVars(httpProxyPort, socksProxyPort int, passthroughEnv []st
 	if tmpdir == "" {
 		tmpdir = "/tmp/claude"
 	}
-	envVars := []string{"SANDBOX_RUNTIME=1", "TMPDIR=" + tmpdir}
+	envVars := []string{
+		"SANDBOX_RUNTIME=1",
+		"TMPDIR=" + tmpdir,
+		"ATUIN_DISABLED=true",
+		"HISTFILE=" + filepath.Join(tmpdir, ".shell_history"),
+	}
 
 	if httpProxyPort != 0 || socksProxyPort != 0 {
 		noProxy := strings.Join([]string{

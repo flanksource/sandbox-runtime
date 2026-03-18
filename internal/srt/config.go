@@ -50,6 +50,7 @@ type SandboxRuntimeConfig struct {
 	MandatoryDenySearchDepth     int                 `json:"mandatoryDenySearchDepth,omitempty" yaml:"mandatoryDenySearchDepth,omitempty"`
 	AllowPty                     bool                `json:"allowPty,omitempty" yaml:"allowPty,omitempty"`
 	Seccomp                      *SeccompConfig      `json:"seccomp,omitempty" yaml:"seccomp,omitempty"`
+	Tokens                       *TokensConfig       `json:"tokens,omitempty" yaml:"tokens,omitempty"`
 }
 
 func DefaultConfig() SandboxRuntimeConfig {
@@ -105,6 +106,7 @@ func (c *SandboxRuntimeConfig) MergeFrom(other *SandboxRuntimeConfig) {
 			c.IgnoreViolations[k] = mergeStringSlicesDedup(c.IgnoreViolations[k], v)
 		}
 	}
+	c.Tokens = MergeTokensConfig(c.Tokens, other.Tokens)
 }
 
 func (c *SandboxRuntimeConfig) NormalizeAndValidate() error {

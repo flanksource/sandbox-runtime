@@ -31,6 +31,7 @@ type Manager struct {
 	macLogMonitor   *macOSSandboxLogMonitor
 	cleanupOnce     sync.Once
 	cleanupStopChan chan struct{} // closed when cleanup signal goroutine should stop
+	tokenManager    *TokenManager
 }
 
 func NewManager() *Manager {
@@ -77,6 +78,30 @@ func (m *Manager) Initialize(ctx context.Context, runtimeConfig SandboxRuntimeCo
 
 	m.config = &runtimeConfig
 	m.ask = sandboxAskCallback
+
+	if runtimeConfig.Tokens != nil {
+		credDir, err := os.MkdirTemp("", "srt-creds-*")
+		if err != nil {
+			return fmt.Errorf("creating credential temp dir: %w", err)
+		}
+		tm := NewTokenManager(credDir)
+		results, err := tm.Acquire(ctx, runtimeConfig.Tokens)
+		if err != nil {
+			tm.Cleanup()
+			return fmt.Errorf("acquiring tokens: %w", err)
+		}
+		if m.config.Env == nil {
+			m.config.Env = make(map[string]string)
+		}
+		for _, r := range results {
+			for k, v := range r.EnvVars {
+				m.config.Env[k] = v
+			}
+			m.config.Filesystem.AllowWrite = append(m.config.Filesystem.AllowWrite, r.WritePaths...)
+		}
+		tm.StartRefresh(ctx, runtimeConfig.Tokens, 60*time.Second)
+		m.tokenManager = tm
+	}
 
 	deps := m.checkDependenciesLocked(nil)
 	if len(deps.Errors) > 0 {
@@ -373,6 +398,8 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 		return "", errors.New("sandbox manager is not initialized")
 	}
 
+	interactive := command == ""
+
 	active := cfg
 	if customConfig != nil {
 		if err := customConfig.NormalizeAndValidate(); err != nil {
@@ -380,6 +407,12 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 		}
 		merged := mergeRuntimeConfig(cfg, customConfig)
 		active = &merged
+	}
+
+	if interactive {
+		activeCopy := *active
+		activeCopy.AllowPty = true
+		active = &activeCopy
 	}
 
 	expandedDenyRead := make([]string, 0, len(active.Filesystem.DenyRead))
@@ -417,6 +450,7 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 	case PlatformMacOS:
 		return WrapCommandWithSandboxMacOS(MacOSSandboxParams{
 			Command:                      command,
+			Interactive:                  interactive,
 			NeedsNetworkRestriction:      needsNetworkRestriction,
 			HTTPProxyPort:                httpProxyPort,
 			SOCKSProxyPort:               socksProxyPort,
@@ -435,6 +469,7 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 	case PlatformLinux:
 		return WrapCommandWithSandboxLinux(ctx, LinuxSandboxParams{
 			Command:                   command,
+			Interactive:               interactive,
 			NeedsNetworkRestriction:   needsNetworkRestriction,
 			HTTPSocketPath:            httpSocketPath,
 			SOCKSSocketPath:           socksSocketPath,
@@ -483,6 +518,11 @@ func (m *Manager) Reset(ctx context.Context) error {
 	if m.socksProxy != nil {
 		_ = m.socksProxy.Close()
 		m.socksProxy = nil
+	}
+
+	if m.tokenManager != nil {
+		m.tokenManager.Cleanup()
+		m.tokenManager = nil
 	}
 
 	// Stop the signal-cleanup goroutine and allow re-registration on the

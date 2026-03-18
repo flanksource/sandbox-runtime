@@ -42,6 +42,7 @@ type SandboxDependencyCheck struct {
 
 type LinuxSandboxParams struct {
 	Command                   string
+	Interactive               bool
 	NeedsNetworkRestriction   bool
 	HTTPSocketPath            string
 	SOCKSSocketPath           string
@@ -511,23 +512,27 @@ func WrapCommandWithSandboxLinux(ctx context.Context, params LinuxSandboxParams)
 		bwrapArgs = append(bwrapArgs, "--proc", "/proc")
 	}
 
-	bwrapArgs = append(bwrapArgs, "--", shellPath, "-c")
-
-	if params.NeedsNetworkRestriction && params.HTTPSocketPath != "" && params.SOCKSSocketPath != "" {
-		sandboxCommand := buildLinuxSandboxCommand(
-			params.HTTPSocketPath,
-			params.SOCKSSocketPath,
-			params.Command,
-			seccompFilterPath,
-			shellPath,
-			applySeccompPath,
-		)
-		bwrapArgs = append(bwrapArgs, sandboxCommand)
-	} else if seccompFilterPath != "" && applySeccompPath != "" {
-		applyCmd := quoteShellArgs(applySeccompPath, seccompFilterPath, shellPath, "-c", params.Command)
-		bwrapArgs = append(bwrapArgs, applyCmd)
+	if params.Interactive {
+		bwrapArgs = append(bwrapArgs, "--", shellPath, "-l")
 	} else {
-		bwrapArgs = append(bwrapArgs, params.Command)
+		bwrapArgs = append(bwrapArgs, "--", shellPath, "-c")
+
+		if params.NeedsNetworkRestriction && params.HTTPSocketPath != "" && params.SOCKSSocketPath != "" {
+			sandboxCommand := buildLinuxSandboxCommand(
+				params.HTTPSocketPath,
+				params.SOCKSSocketPath,
+				params.Command,
+				seccompFilterPath,
+				shellPath,
+				applySeccompPath,
+			)
+			bwrapArgs = append(bwrapArgs, sandboxCommand)
+		} else if seccompFilterPath != "" && applySeccompPath != "" {
+			applyCmd := quoteShellArgs(applySeccompPath, seccompFilterPath, shellPath, "-c", params.Command)
+			bwrapArgs = append(bwrapArgs, applyCmd)
+		} else {
+			bwrapArgs = append(bwrapArgs, params.Command)
+		}
 	}
 
 	wrapped := quoteShellArgs(append([]string{bwrapPath}, bwrapArgs...)...)

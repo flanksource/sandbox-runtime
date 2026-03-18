@@ -1,4 +1,11 @@
+allowPty: true
+env:
+  STARSHIP_CACHE: $HOME/.sandbox/cache/starship
+  HISTFILE: $HOME/.sandbox/history
+  HOME: $HOME/.sandbox
 filesystem:
+  allowWrite:
+    - $HOME/.sandbox
   denyWrite:
     - $HOME/.zshrc
     - $HOME/.bashrc

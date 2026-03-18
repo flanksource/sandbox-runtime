@@ -1,5 +1,5 @@
 GO ?= go
-APP_NAME ?= srt
+APP_NAME ?= sbx
 BIN_DIR ?= bin
 MAIN_PKG ?= ./cmd/srt
 
@@ -43,7 +43,7 @@ vendor-sync:
 seccomp:
 	./scripts/build-seccomp-binaries.sh
 
-test-sandbox: build
+test-e2e: build
 	$(BIN_DIR)/$(APP_NAME) test-sandbox test/fixtures/**/*.md
 
 check: fmt-check vet test

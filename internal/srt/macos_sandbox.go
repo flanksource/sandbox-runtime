@@ -12,6 +12,7 @@ import (
 
 type MacOSSandboxParams struct {
 	Command                      string
+	Interactive                  bool
 	NeedsNetworkRestriction      bool
 	HTTPProxyPort                int
 	SOCKSProxyPort               int
@@ -382,6 +383,7 @@ func generateMacOSBaseProfile(logTag string, enableWeakerNetworkIsolation bool) 
 		`(allow file-ioctl (literal "/dev/urandom"))`,
 		`(allow file-ioctl (literal "/dev/dtracehelper"))`,
 		`(allow file-ioctl (literal "/dev/tty"))`,
+		`(allow file-ioctl (regex #"^/dev/ttys"))`,
 		``,
 		`(allow file-ioctl file-read-data file-write-data`,
 		`  (require-all`,
@@ -417,7 +419,12 @@ func WrapCommandWithSandboxMacOS(params MacOSSandboxParams) (string, error) {
 	proxyEnv := GenerateProxyEnvVars(params.HTTPProxyPort, params.SOCKSProxyPort, params.PassthroughEnv, params.Env)
 	args := []string{"env", "-i"}
 	args = append(args, proxyEnv...)
-	args = append(args, "sandbox-exec", "-p", profile, shellPath, "-c", params.Command)
+	args = append(args, "sandbox-exec", "-p", profile)
+	if params.Interactive {
+		args = append(args, shellPath, "-l")
+	} else {
+		args = append(args, shellPath, "-c", params.Command)
+	}
 
 	return quoteShellArgs(args...), nil
 }

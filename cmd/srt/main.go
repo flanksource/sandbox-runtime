@@ -24,6 +24,7 @@ type options struct {
 	hasControl  bool
 	help        bool
 	presets     []string
+	tokens      srt.TokensConfig
 }
 
 func main() {
@@ -88,6 +89,14 @@ func main() {
 		}
 	}
 
+	if opts.hasTokens() {
+		if runtimeConfig == nil {
+			cfg := srt.DefaultConfig()
+			runtimeConfig = &cfg
+		}
+		runtimeConfig.Tokens = srt.MergeTokensConfig(runtimeConfig.Tokens, &opts.tokens)
+	}
+
 	if runtimeConfig == nil {
 		cfg := srt.DefaultConfig()
 		runtimeConfig = &cfg
@@ -108,6 +117,7 @@ func main() {
 	}
 
 	command := ""
+	binShell := ""
 	if opts.commandMode != "" {
 		command = opts.commandMode
 		logger.Debugf("Command string mode (-c): %s", command)
@@ -115,11 +125,11 @@ func main() {
 		command = strings.Join(commandArgs, " ")
 		logger.Debugf("Original command: %s", command)
 	} else {
-		fmt.Fprintln(os.Stderr, "Error: No command specified. Use -c <command> or provide command arguments.")
-		os.Exit(1)
+		binShell = detectShell()
+		logger.Debugf("No command specified, launching interactive shell: %s", binShell)
 	}
 
-	sandboxedCommand, err := srt.SandboxManager.WrapWithSandbox(ctx, command, "", nil)
+	sandboxedCommand, err := srt.SandboxManager.WrapWithSandbox(ctx, command, binShell, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
@@ -185,14 +195,40 @@ func exitCodeFromError(err error) (int, bool) {
 	return 1, true
 }
 
+func (o *options) ensureAWS() *srt.AWSTokenConfig {
+	if o.tokens.AWS == nil {
+		o.tokens.AWS = &srt.AWSTokenConfig{}
+	}
+	return o.tokens.AWS
+}
+
+func (o *options) ensureGCP() *srt.GCPTokenConfig {
+	if o.tokens.GCP == nil {
+		o.tokens.GCP = &srt.GCPTokenConfig{}
+	}
+	return o.tokens.GCP
+}
+
+func (o *options) ensureAzure() *srt.AzureTokenConfig {
+	if o.tokens.Azure == nil {
+		o.tokens.Azure = &srt.AzureTokenConfig{}
+	}
+	return o.tokens.Azure
+}
+
+func (o *options) hasTokens() bool {
+	t := &o.tokens
+	return t.AWS != nil || t.GCP != nil || t.Azure != nil || t.GitHub != nil || t.Kubernetes != nil
+}
+
 func parseArgs(args []string) (options, []string, error) {
-	opts := options{}
+	opts := &options{}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
 		case "-h", "--help":
 			opts.help = true
-			return opts, nil, nil
+			return *opts, nil, nil
 		case "-d", "--debug":
 			opts.debug = true
 		case "-v", "-vv", "-vvv", "-vvvv":
@@ -200,39 +236,115 @@ func parseArgs(args []string) (options, []string, error) {
 		case "-s", "--settings":
 			i++
 			if i >= len(args) {
-				return opts, nil, fmt.Errorf("missing value for %s", a)
+				return *opts, nil, fmt.Errorf("missing value for %s", a)
 			}
 			opts.settings = args[i]
 		case "-c":
 			i++
 			if i >= len(args) {
-				return opts, nil, fmt.Errorf("missing value for -c")
+				return *opts, nil, fmt.Errorf("missing value for -c")
 			}
 			opts.commandMode = args[i]
 		case "-p", "--preset":
 			i++
 			if i >= len(args) {
-				return opts, nil, fmt.Errorf("missing value for %s", a)
+				return *opts, nil, fmt.Errorf("missing value for %s", a)
 			}
 			opts.presets = append(opts.presets, args[i])
 		case "--control-fd":
 			i++
 			if i >= len(args) {
-				return opts, nil, fmt.Errorf("missing value for --control-fd")
+				return *opts, nil, fmt.Errorf("missing value for --control-fd")
 			}
 			fd := 0
 			if _, err := fmt.Sscanf(args[i], "%d", &fd); err != nil {
-				return opts, nil, fmt.Errorf("invalid --control-fd value: %s", args[i])
+				return *opts, nil, fmt.Errorf("invalid --control-fd value: %s", args[i])
 			}
 			opts.controlFD = fd
 			opts.hasControl = true
+		case "--github-token":
+			opts.tokens.GitHub = &srt.GitHubTokenConfig{}
+		case "--aws":
+			opts.ensureAWS()
+		case "--gcp":
+			opts.ensureGCP()
+		case "--kube":
+			if opts.tokens.Kubernetes == nil {
+				opts.tokens.Kubernetes = &srt.K8sTokenConfig{}
+			}
+		case "--aws-profile":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --aws-profile")
+			}
+			opts.ensureAWS().Profile = args[i]
+		case "--aws-region":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --aws-region")
+			}
+			opts.ensureAWS().Region = args[i]
+		case "--aws-assume-role":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --aws-assume-role")
+			}
+			opts.ensureAWS().AssumeRole = args[i]
+		case "--gcp-project":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --gcp-project")
+			}
+			opts.ensureGCP().Project = args[i]
+		case "--gcp-credentials":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --gcp-credentials")
+			}
+			opts.ensureGCP().Credentials = args[i]
+		case "--azure-client-id":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --azure-client-id")
+			}
+			opts.ensureAzure().ClientID = args[i]
+		case "--azure-client-secret":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --azure-client-secret")
+			}
+			opts.ensureAzure().ClientSecret = args[i]
+		case "--azure-tenant-id":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --azure-tenant-id")
+			}
+			opts.ensureAzure().TenantID = args[i]
+		case "--kube-context":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --kube-context")
+			}
+			opts.tokens.Kubernetes = &srt.K8sTokenConfig{Context: args[i]}
 		case "--":
-			return opts, args[i+1:], nil
+			return *opts, args[i+1:], nil
 		default:
-			return opts, args[i:], nil
+			return *opts, args[i:], nil
 		}
 	}
-	return opts, nil, nil
+	return *opts, nil, nil
+}
+
+func detectShell() string {
+	if shell := os.Getenv("SHELL"); shell != "" {
+		return shell
+	}
+	for _, name := range []string{"zsh", "bash", "sh"} {
+		if path := srt.Which(name); path != "" {
+			return path
+		}
+	}
+	return "sh"
 }
 
 func startControlFDReader(fd int) {
@@ -278,97 +390,122 @@ func defaultConfigPath() string {
 }
 
 func printHelp() {
-	fmt.Print(`srt - Run commands in a sandbox with network and filesystem restrictions
+	fmt.Print(`sbx - Run commands in a sandbox with network and filesystem restrictions
 
-Usage:
-  srt [options] [command ...]
-  srt -c <command>
+USAGE
+  sbx [options]                      Launch interactive shell (detects $SHELL)
+  sbx [options] -- <command ...>
+  sbx -c <command>
 
-Subcommands:
-  profile <subcommand>              Manage sandbox profiles and presets
-  test-sandbox <fixture-paths...>   Run fixture-based sandbox tests
+SUBCOMMANDS
+  profile list                       List available presets
+  profile show <name>                Show expanded preset details
+  profile resolve                    Show final merged config for cwd
+  profile init [--ai-model <model>]  Detect project type, suggest .sandbox.yaml
+  test-sandbox <fixture-paths...>    Run fixture-based sandbox tests
 
-Options:
-  -v                         increase verbosity (-v, -vv, -vvv, -vvvv)
-  -d, --debug                alias for -v
-  -s, --settings <path>      path to config file (default: ~/.srt-settings.json)
-  -c <command>               run command string directly
-  -p, --preset <name>        enable a preset (repeatable, e.g. -p golang -p git)
-  --control-fd <fd>          read config updates from fd (JSON lines)
-  -h, --help                 show help
+OPTIONS
+  -c <command>               Run command string directly
+  -p, --preset <name>        Enable a preset (repeatable)
+  -s, --settings <path>      Config file path (default: ~/.srt-settings.json)
+  --control-fd <fd>          Read config updates from fd (JSON lines)
+  -v                         Increase verbosity (-v, -vv, -vvv, -vvvv)
+  -d, --debug                Alias for -v
+  -h, --help                 Show this help
 
-Profile commands:
-  srt profile list           list available presets
-  srt profile show <name>    show expanded preset (network, fs, env, passthroughEnv)
-  srt profile resolve        show final merged config for cwd (.sandbox.yaml)
-  srt profile init           detect project type, suggest .sandbox.yaml
+TOKEN FLAGS
+  --github-token             Acquire GitHub token (GITHUB_TOKEN / gh CLI)
+  --aws                      Acquire AWS credentials (default chain)
+  --gcp                      Acquire GCP credentials (GOOGLE_APPLICATION_CREDENTIALS)
+  --kube                     Acquire kubeconfig (current context)
+  --aws-profile <name>       AWS CLI profile
+  --aws-region <region>      AWS region
+  --aws-assume-role <arn>    STS AssumeRole ARN
+  --gcp-project <project>    GCP project ID
+  --gcp-credentials <path>   GCP service account key file
+  --azure-client-id <id>     Azure client ID
+  --azure-client-secret <s>  Azure client secret
+  --azure-tenant-id <id>     Azure tenant ID
+  --kube-context <name>      Kubernetes context name
 
-Environment:
-  Sandboxed commands receive a clean environment. Host env vars are injected in
-  three layers (later layers override):
-    1. Default passthrough: TERM, HOME, USER, SHELL, PATH, LANG, EDITOR, XDG_*, etc.
-    2. Preset/profile passthroughEnv: e.g. golang passes GOPATH, GOMODCACHE, GOROOT
-    3. Explicit env: key=value pairs from presets or .sandbox.yaml override all
+PRESETS
+  golang  npm  nextjs  playwright  python  rust  docker  git  ssh
+  aws  gcp  azure  homebrew  ide  shell
 
-Presets:
-  golang, npm, nextjs, playwright, python, rust, docker, git, ssh, aws, gcp, azure, homebrew, ide, shell
+ENVIRONMENT
+  Sandboxed commands receive a clean environment. Host env vars are
+  injected in three layers (later layers override):
 
-Full .sandbox.yaml reference:
+    1. Default passthrough  TERM, HOME, USER, SHELL, PATH, LANG, ...
+    2. Profile passthrough  e.g. golang passes GOPATH, GOMODCACHE
+    3. Explicit env         key=value from presets or .sandbox.yaml
 
-  # ─── Presets ──────────────────────────────────────────────────────
-  # Include built-in presets by name. Each adds network domains,
-  # filesystem paths, env vars, and passthroughEnv for its ecosystem.
-  allow:
-    - golang
-    - git
+.SANDBOX.YAML REFERENCE
 
-  # ─── Network ─────────────────────────────────────────────────────
+  # ─── Presets ────────────────────────────────────────────────────
+  allow: [golang, git]
+
+  # ─── Network ───────────────────────────────────────────────────
   network:
-    allowedDomains:                    # domains the sandbox can reach
-      - custom-registry.example.com
-      - "*.internal.corp"              # wildcard subdomains
-    deniedDomains:                     # explicitly blocked (checked first)
-      - evil.example.com
-    allowUnixSockets:                  # specific unix sockets to allow
-      - /var/run/docker.sock
-    allowAllUnixSockets: false         # allow ALL unix sockets
-    allowLocalBinding: false           # bind to localhost ports
-    # httpProxyPort: 8080              # use external HTTP proxy
-    # socksProxyPort: 1080             # use external SOCKS proxy
-    # mitmProxy:                       # route domains through MITM socket
-    #   socketPath: /tmp/mitmproxy.sock
-    #   domains: ["api.example.com"]
+    allowedDomains: [custom-registry.example.com, "*.internal.corp"]
+    deniedDomains:  [evil.example.com]
+    allowUnixSockets: [/var/run/docker.sock]
+    allowAllUnixSockets: false
+    allowLocalBinding:   false
 
-  # ─── Filesystem ──────────────────────────────────────────────────
+  # ─── Filesystem ────────────────────────────────────────────────
   filesystem:
-    allowWrite:                        # writable paths (~ and $ENV supported)
-      - .                              # current working directory
-      - /tmp
-      - $HOME/.cache
-    denyRead:                          # block reading these paths
-      - $HOME/.ssh
-      - $HOME/.aws/credentials
-    denyWrite:                         # block writing within allowWrite
-      - .env
-      - "**/.env.local"
-    allowGitConfig: false              # allow .git/config access
+    allowWrite: [., /tmp, $HOME/.cache]
+    denyRead:   [$HOME/.ssh, $HOME/.aws/credentials]
+    denyWrite:  [.env, "**/.env.local"]
+    allowGitConfig: false
 
-  # ─── Environment ─────────────────────────────────────────────────
-  env:                                 # explicit key=value (overrides passthrough)
+  # ─── Environment ───────────────────────────────────────────────
+  env:
     GONOSUMCHECK: "*"
-    NODE_TLS_REJECT_UNAUTHORIZED: "0"
-  passthroughEnv:                      # host env var names to forward if set
-    - MY_CUSTOM_TOKEN
-    - DATABASE_URL
+  passthroughEnv: [MY_CUSTOM_TOKEN, DATABASE_URL]
 
-  # ─── Violation Handling ──────────────────────────────────────────
-  ignoreViolations:                    # suppress violation logs per command
+  # ─── Violation Handling ────────────────────────────────────────
+  ignoreViolations:
     curl: [network]
-    git: [network, filesystem]
+    git:  [network, filesystem]
 
-  # ─── Runtime Behavior ───────────────────────────────────────────
-  allowPty: false                      # pseudo-terminal allocation
-  enableWeakerNestedSandbox: false     # needed for docker-in-sandbox
-  enableWeakerNetworkIsolation: false  # macOS: allow trustd.agent for Go TLS
+  # ─── Short-Lived Tokens ────────────────────────────────────────
+  # Acquire short-lived credentials before the sandbox starts.
+  # Tokens are written to a temp directory and auto-refreshed.
+  #
+  # Provider        Credential File                    Env Vars Set
+  # ───────────     ──────────────────────────────     ──────────────────────────────
+  # aws             <tmp>/.aws/credentials             AWS_SHARED_CREDENTIALS_FILE,
+  #                                                    AWS_DEFAULT_REGION,
+  #                                                    AWS_EC2_METADATA_DISABLED
+  # gcp             <tmp>/gcloud/application_          GOOGLE_APPLICATION_CREDENTIALS,
+  #                   default_credentials.json         CLOUDSDK_CORE_PROJECT
+  # azure           (env vars only)                    AZURE_CLIENT_ID,
+  #                                                    AZURE_CLIENT_SECRET,
+  #                                                    AZURE_TENANT_ID
+  # github          (env var only)                     GITHUB_TOKEN
+  # kubernetes      <tmp>/.kube/config                 KUBECONFIG
+  tokens:
+    github: {}                             # uses GITHUB_TOKEN, GH_TOKEN, or gh CLI
+    aws:
+      profile: my-profile                 # AWS CLI profile (optional)
+      assumeRole: arn:aws:iam::123:role/X  # STS AssumeRole ARN (optional)
+      region: us-east-1                    # default region (optional)
+    gcp:
+      project: my-project                 # GCP project (optional)
+      credentials: /path/to/sa.json       # SA key (default: GOOGLE_APPLICATION_CREDENTIALS)
+    azure:
+      clientID: ...
+      clientSecret: ...
+      tenantID: ...
+    kubernetes:
+      context: my-cluster                  # kubeconfig context name
+
+  # ─── Runtime Behavior ─────────────────────────────────────────
+  allowPty: false              # Allow pseudo-terminal access (auto-enabled
+                               # for interactive shell mode)
+  enableWeakerNestedSandbox: false
+  enableWeakerNetworkIsolation: false
 `)
 }

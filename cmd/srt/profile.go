@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/flanksource/sandbox-runtime/internal/srt"
 	"gopkg.in/yaml.v3"
@@ -28,7 +27,7 @@ func runProfile(args []string) int {
 	case "resolve":
 		return profileResolve()
 	case "init":
-		return profileInit()
+		return profileInit(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown profile subcommand: %s\n", args[0])
 		printProfileHelp()
@@ -82,40 +81,6 @@ func profileResolve() int {
 	return 0
 }
 
-func profileInit() int {
-	cwd, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		return 1
-	}
-
-	var detected []string
-	markers := map[string]string{
-		"go.mod":           "golang",
-		"package.json":     "npm",
-		"Cargo.toml":       "rust",
-		"pyproject.toml":   "python",
-		"requirements.txt": "python",
-		"Dockerfile":       "docker",
-		".git":             "git",
-	}
-	for file, preset := range markers {
-		if _, err := os.Stat(fmt.Sprintf("%s/%s", cwd, file)); err == nil {
-			detected = append(detected, preset)
-		}
-	}
-
-	detected = dedup(detected)
-	if len(detected) == 0 {
-		fmt.Println("# No ecosystems detected. Add presets manually:")
-		fmt.Println("allow: []")
-	} else {
-		fmt.Printf("# Detected: %s\n", strings.Join(detected, ", "))
-		fmt.Printf("allow: [%s]\n", strings.Join(detected, ", "))
-	}
-	return 0
-}
-
 func dedup(items []string) []string {
 	seen := make(map[string]bool)
 	var result []string
@@ -136,6 +101,12 @@ func printProfileHelp() {
 	fmt.Println("  show <name>       Show expanded preset (network, fs, env, passthroughEnv)")
 	fmt.Println("  resolve           Show final merged config for cwd as JSON")
 	fmt.Println("  init              Detect project type, suggest starter .sandbox.yaml")
+	fmt.Println()
+	fmt.Println("Init flags:")
+	fmt.Println("  --ai-model <model>  Use AI to generate config from Claude Code history")
+	fmt.Println("  --since <duration>  History window (default: 168h / 7 days)")
+	fmt.Println("  --all               Scan all projects, not just cwd")
+	fmt.Println("  --save              Write .sandbox.yaml without prompting")
 	fmt.Println()
 	fmt.Println("Each preset configures network domains, filesystem write paths, explicit env")
 	fmt.Println("vars, and passthroughEnv (host env var names forwarded into the sandbox).")

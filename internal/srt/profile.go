@@ -10,6 +10,7 @@ type Profile struct {
 	EnableWeakerNestedSandbox    bool                `yaml:"enableWeakerNestedSandbox,omitempty"`
 	EnableWeakerNetworkIsolation bool                `yaml:"enableWeakerNetworkIsolation,omitempty"`
 	AllowPty                     bool                `yaml:"allowPty,omitempty"`
+	Tokens                       *TokensConfig       `yaml:"tokens,omitempty"`
 }
 
 func MergeProfiles(profiles ...*Profile) *Profile {
@@ -71,6 +72,8 @@ func MergeProfiles(profiles ...*Profile) *Profile {
 				result.IgnoreViolations[k] = mergeStringSlicesDedup(result.IgnoreViolations[k], v)
 			}
 		}
+
+		result.Tokens = MergeTokensConfig(result.Tokens, p.Tokens)
 	}
 	return result
 }
@@ -93,6 +96,7 @@ func ResolveProfile(p *Profile) (*SandboxRuntimeConfig, error) {
 		EnableWeakerNestedSandbox:    p.EnableWeakerNestedSandbox,
 		EnableWeakerNetworkIsolation: p.EnableWeakerNetworkIsolation,
 		AllowPty:                     p.AllowPty,
+		Tokens:                       p.Tokens,
 	})
 
 	cfg := DefaultConfig()
@@ -114,6 +118,7 @@ func ResolveProfile(p *Profile) (*SandboxRuntimeConfig, error) {
 	if len(expanded.PassthroughEnv) > 0 {
 		cfg.PassthroughEnv = expanded.PassthroughEnv
 	}
+	cfg.Tokens = expanded.Tokens
 	return &cfg, nil
 }
 
