@@ -21,3 +21,6 @@ type RipgrepConfig = srt.RipgrepConfig
 
 // SeccompConfig overrides paths to seccomp helper binaries on Linux.
 type SeccompConfig = srt.SeccompConfig
+
+// Profile describes a composable sandbox profile with preset expansion.
+type Profile = srt.Profile

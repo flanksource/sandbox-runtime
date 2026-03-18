@@ -140,7 +140,7 @@ func TestExpandGlobPattern(t *testing.T) {
 }
 
 func TestGenerateProxyEnvVars(t *testing.T) {
-	env := GenerateProxyEnvVars(3128, 1080)
+	env := GenerateProxyEnvVars(3128, 1080, nil)
 	joined := strings.Join(env, "\n")
 	mustContain := []string{
 		"SANDBOX_RUNTIME=1",
@@ -152,6 +152,52 @@ func TestGenerateProxyEnvVars(t *testing.T) {
 	for _, m := range mustContain {
 		if !strings.Contains(joined, m) {
 			t.Fatalf("expected env vars to contain %q, got:\n%s", m, joined)
+		}
+	}
+}
+
+func TestGenerateProxyEnvVars_Passthrough(t *testing.T) {
+	t.Setenv("SRT_TEST_PASSTHROUGH_VAR", "hello123")
+	env := GenerateProxyEnvVars(0, 0, []string{"SRT_TEST_PASSTHROUGH_VAR"})
+	found := false
+	for _, kv := range env {
+		if kv == "SRT_TEST_PASSTHROUGH_VAR=hello123" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected SRT_TEST_PASSTHROUGH_VAR=hello123 in env, got %v", env)
+	}
+}
+
+func TestGenerateProxyEnvVars_ExtraEnvOverridesPassthrough(t *testing.T) {
+	t.Setenv("SRT_TEST_OVERRIDE", "from-host")
+	env := GenerateProxyEnvVars(0, 0, []string{"SRT_TEST_OVERRIDE"}, map[string]string{"SRT_TEST_OVERRIDE": "from-extra"})
+	count := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "SRT_TEST_OVERRIDE=") {
+			count++
+		}
+	}
+	last := ""
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], "SRT_TEST_OVERRIDE=") {
+			last = env[i]
+			break
+		}
+	}
+	if last != "SRT_TEST_OVERRIDE=from-extra" {
+		t.Errorf("expected last SRT_TEST_OVERRIDE=from-extra, got %q", last)
+	}
+	_ = count
+}
+
+func TestGenerateProxyEnvVars_UnsetVarSkipped(t *testing.T) {
+	os.Unsetenv("SRT_TEST_UNSET_VAR")
+	env := GenerateProxyEnvVars(0, 0, []string{"SRT_TEST_UNSET_VAR"})
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "SRT_TEST_UNSET_VAR=") {
+			t.Errorf("unset var should not appear in env, got %q", kv)
 		}
 	}
 }

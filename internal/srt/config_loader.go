@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -40,11 +41,21 @@ func LoadConfig(filePath string) (*SandboxRuntimeConfig, error) {
 		return nil, fmt.Errorf("failed to read config %s: %w", filePath, err)
 	}
 
-	if strings.TrimSpace(string(data)) == "" {
+	content := strings.TrimSpace(string(data))
+	if content == "" {
 		return nil, nil
 	}
 
-	cfg, err := LoadConfigFromString(string(data))
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if ext == ".yaml" || ext == ".yml" {
+		cfg, err := LoadConfigFromYAML(content)
+		if err != nil {
+			return nil, fmt.Errorf("invalid config in %s: %w", filePath, err)
+		}
+		return cfg, nil
+	}
+
+	cfg, err := LoadConfigFromString(content)
 	if err != nil {
 		return nil, fmt.Errorf("invalid config in %s: %w", filePath, err)
 	}

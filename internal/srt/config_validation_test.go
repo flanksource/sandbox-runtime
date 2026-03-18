@@ -106,6 +106,38 @@ func TestConfigValidation_RequiredFieldsInJSON(t *testing.T) {
 	}
 }
 
+func TestConfigMergeFrom(t *testing.T) {
+	base := DefaultConfig()
+	base.Network.AllowedDomains = []string{"example.com"}
+	base.Filesystem.AllowWrite = []string{"/tmp"}
+	base.Env = map[string]string{"A": "1"}
+
+	other := DefaultConfig()
+	other.Network.AllowedDomains = []string{"example.com", "other.com"}
+	other.Filesystem.AllowWrite = []string{"/home"}
+	other.Env = map[string]string{"B": "2"}
+	other.PassthroughEnv = []string{"GOPATH"}
+	other.AllowPty = true
+
+	base.MergeFrom(&other)
+
+	if len(base.Network.AllowedDomains) != 2 {
+		t.Fatalf("expected 2 allowed domains, got %v", base.Network.AllowedDomains)
+	}
+	if len(base.Filesystem.AllowWrite) != 2 {
+		t.Fatalf("expected 2 write paths, got %v", base.Filesystem.AllowWrite)
+	}
+	if base.Env["A"] != "1" || base.Env["B"] != "2" {
+		t.Fatalf("unexpected env: %v", base.Env)
+	}
+	if len(base.PassthroughEnv) != 1 || base.PassthroughEnv[0] != "GOPATH" {
+		t.Fatalf("unexpected passthrough: %v", base.PassthroughEnv)
+	}
+	if !base.AllowPty {
+		t.Fatalf("expected AllowPty=true")
+	}
+}
+
 func TestConfigValidation_RipgrepDefaultsToNil(t *testing.T) {
 	cfg := DefaultConfig()
 	if err := cfg.NormalizeAndValidate(); err != nil {

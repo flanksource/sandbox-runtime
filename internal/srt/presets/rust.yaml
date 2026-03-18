@@ -1,0 +1,12 @@
+network:
+  allowedDomains:
+    - crates.io
+    - static.crates.io
+filesystem:
+  allowWrite:
+    - $HOME/.cargo
+env:
+  CARGO_HTTP_CHECK_REVOKE: "false"
+passthroughEnv:
+  - CARGO_HOME
+  - RUSTUP_HOME

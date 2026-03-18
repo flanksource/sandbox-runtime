@@ -1,0 +1,2 @@
+env:
+  SRT_TEST_FOO: bar

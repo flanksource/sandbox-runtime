@@ -6,6 +6,8 @@ import (
 	"time"
 
 	socks5 "github.com/armon/go-socks5"
+
+	"github.com/flanksource/commons/logger"
 )
 
 type SocksProxyOptions struct {
@@ -53,7 +55,7 @@ func StartSocksProxyServer(opts SocksProxyOptions) (*SocksProxyServer, int, erro
 	}
 	go func() {
 		if err := server.Serve(ln); err != nil {
-			Debugf("SOCKS proxy serve error: %v", err)
+			logger.V(4).Infof("SOCKS proxy serve error: %v", err)
 		}
 	}()
 	port := ln.Addr().(*net.TCPAddr).Port

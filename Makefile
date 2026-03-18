@@ -1,5 +1,5 @@
 GO ?= go
-APP_NAME ?= srt
+APP_NAME ?= sbx
 BIN_DIR ?= bin
 MAIN_PKG ?= ./cmd/srt
 
@@ -15,6 +15,9 @@ dist: build
 	@mkdir -p dist/bin dist/third_party
 	@cp $(BIN_DIR)/$(APP_NAME) dist/bin/$(APP_NAME)
 	@cp -R third_party/seccomp dist/third_party/
+
+install: build
+	@cp $(BIN_DIR)/$(APP_NAME) /usr/local/bin
 
 run:
 	$(GO) run $(MAIN_PKG) $(ARGS)
@@ -39,6 +42,9 @@ vendor-sync:
 
 seccomp:
 	./scripts/build-seccomp-binaries.sh
+
+test-e2e: build
+	$(BIN_DIR)/$(APP_NAME) test-sandbox test/fixtures/**/*.md
 
 check: fmt-check vet test
 

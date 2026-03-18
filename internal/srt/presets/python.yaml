@@ -1,0 +1,14 @@
+network:
+  allowedDomains:
+    - pypi.org
+    - files.pythonhosted.org
+filesystem:
+  allowWrite:
+    - $HOME/.local/lib
+    - $HOME/.cache/pip
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+passthroughEnv:
+  - VIRTUAL_ENV
+  - PYTHONPATH
+  - CONDA_PREFIX

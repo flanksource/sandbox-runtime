@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/flanksource/commons/logger"
 	"github.com/flanksource/sandbox-runtime/internal/srt"
 )
 
@@ -21,11 +23,17 @@ type options struct {
 	controlFD   int
 	hasControl  bool
 	help        bool
+	presets     []string
+	tokens      srt.TokensConfig
 }
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	if len(os.Args) > 1 && os.Args[1] == "profile" {
+		os.Exit(runProfile(os.Args[2:]))
+	}
 
 	opts, commandArgs, err := parseArgs(os.Args[1:])
 	if err != nil {
@@ -39,22 +47,60 @@ func main() {
 	}
 
 	if opts.debug {
-		_ = os.Setenv("SRT_DEBUG", "1")
+		logger.StandardLogger().SetLogLevel(1)
 	}
 
-	configPath := opts.settings
-	if configPath == "" {
-		configPath = defaultConfigPath()
+	var runtimeConfig *srt.SandboxRuntimeConfig
+
+	if opts.settings != "" {
+		logger.Debugf("Loading config from: %s", opts.settings)
+		runtimeConfig, err = srt.LoadConfig(opts.settings)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		}
+	} else {
+		cwd, _ := os.Getwd()
+		runtimeConfig, err = srt.LoadProfiles(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: loading profiles: %v\n", err)
+		}
+		if runtimeConfig == nil {
+			runtimeConfig, err = srt.LoadConfig(defaultConfigPath())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			}
+		}
 	}
 
-	runtimeConfig, err := srt.LoadConfig(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	if len(opts.presets) > 0 {
+		presetConfig, err := srt.ResolveProfile(&srt.Profile{Allow: opts.presets})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error resolving presets: %v\n", err)
+			os.Exit(1)
+		}
+		if runtimeConfig != nil {
+			runtimeConfig.MergeFrom(presetConfig)
+		} else {
+			runtimeConfig = presetConfig
+		}
 	}
+
+	if opts.hasTokens() {
+		if runtimeConfig == nil {
+			cfg := srt.DefaultConfig()
+			runtimeConfig = &cfg
+		}
+		runtimeConfig.Tokens = srt.MergeTokensConfig(runtimeConfig.Tokens, &opts.tokens)
+	}
+
 	if runtimeConfig == nil {
 		cfg := srt.DefaultConfig()
 		runtimeConfig = &cfg
-		srt.Debugf("No valid config found at %s, using default config", configPath)
+		logger.Debugf("No valid config found, using default config")
+	}
+
+	if data, err := json.MarshalIndent(runtimeConfig, "", "  "); err == nil {
+		logger.Tracef("Resolved config:\n%s", string(data))
 	}
 
 	if err := srt.SandboxManager.Initialize(ctx, *runtimeConfig, nil); err != nil {
@@ -67,18 +113,19 @@ func main() {
 	}
 
 	command := ""
+	binShell := ""
 	if opts.commandMode != "" {
 		command = opts.commandMode
-		srt.Debugf("Command string mode (-c): %s", command)
+		logger.Debugf("Command string mode (-c): %s", command)
 	} else if len(commandArgs) > 0 {
 		command = strings.Join(commandArgs, " ")
-		srt.Debugf("Original command: %s", command)
+		logger.Debugf("Original command: %s", command)
 	} else {
-		fmt.Fprintln(os.Stderr, "Error: No command specified. Use -c <command> or provide command arguments.")
-		os.Exit(1)
+		binShell = detectShell()
+		logger.Debugf("No command specified, launching interactive shell: %s", binShell)
 	}
 
-	sandboxedCommand, err := srt.SandboxManager.WrapWithSandbox(ctx, command, "", nil)
+	sandboxedCommand, err := srt.SandboxManager.WrapWithSandbox(ctx, command, binShell, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
@@ -144,52 +191,162 @@ func exitCodeFromError(err error) (int, bool) {
 	return 1, true
 }
 
+func (o *options) ensureAWS() *srt.AWSTokenConfig {
+	if o.tokens.AWS == nil {
+		o.tokens.AWS = &srt.AWSTokenConfig{}
+	}
+	return o.tokens.AWS
+}
+
+func (o *options) ensureGCP() *srt.GCPTokenConfig {
+	if o.tokens.GCP == nil {
+		o.tokens.GCP = &srt.GCPTokenConfig{}
+	}
+	return o.tokens.GCP
+}
+
+func (o *options) ensureAzure() *srt.AzureTokenConfig {
+	if o.tokens.Azure == nil {
+		o.tokens.Azure = &srt.AzureTokenConfig{}
+	}
+	return o.tokens.Azure
+}
+
+func (o *options) hasTokens() bool {
+	t := &o.tokens
+	return t.AWS != nil || t.GCP != nil || t.Azure != nil || t.GitHub != nil || t.Kubernetes != nil
+}
+
 func parseArgs(args []string) (options, []string, error) {
-	opts := options{}
+	opts := &options{}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
 		case "-h", "--help":
 			opts.help = true
-			return opts, nil, nil
+			return *opts, nil, nil
 		case "-d", "--debug":
 			opts.debug = true
+		case "-v", "-vv", "-vvv", "-vvvv":
+			// handled by commons/logger init
 		case "-s", "--settings":
 			i++
 			if i >= len(args) {
-				return opts, nil, fmt.Errorf("missing value for %s", a)
+				return *opts, nil, fmt.Errorf("missing value for %s", a)
 			}
 			opts.settings = args[i]
 		case "-c":
 			i++
 			if i >= len(args) {
-				return opts, nil, fmt.Errorf("missing value for -c")
+				return *opts, nil, fmt.Errorf("missing value for -c")
 			}
 			opts.commandMode = args[i]
+		case "-p", "--preset":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for %s", a)
+			}
+			opts.presets = append(opts.presets, args[i])
 		case "--control-fd":
 			i++
 			if i >= len(args) {
-				return opts, nil, fmt.Errorf("missing value for --control-fd")
+				return *opts, nil, fmt.Errorf("missing value for --control-fd")
 			}
 			fd := 0
 			if _, err := fmt.Sscanf(args[i], "%d", &fd); err != nil {
-				return opts, nil, fmt.Errorf("invalid --control-fd value: %s", args[i])
+				return *opts, nil, fmt.Errorf("invalid --control-fd value: %s", args[i])
 			}
 			opts.controlFD = fd
 			opts.hasControl = true
+		case "--github-token":
+			opts.tokens.GitHub = &srt.GitHubTokenConfig{}
+		case "--aws":
+			opts.ensureAWS()
+		case "--gcp":
+			opts.ensureGCP()
+		case "--kube":
+			if opts.tokens.Kubernetes == nil {
+				opts.tokens.Kubernetes = &srt.K8sTokenConfig{}
+			}
+		case "--aws-profile":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --aws-profile")
+			}
+			opts.ensureAWS().Profile = args[i]
+		case "--aws-region":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --aws-region")
+			}
+			opts.ensureAWS().Region = args[i]
+		case "--aws-assume-role":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --aws-assume-role")
+			}
+			opts.ensureAWS().AssumeRole = args[i]
+		case "--gcp-project":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --gcp-project")
+			}
+			opts.ensureGCP().Project = args[i]
+		case "--gcp-credentials":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --gcp-credentials")
+			}
+			opts.ensureGCP().Credentials = args[i]
+		case "--azure-client-id":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --azure-client-id")
+			}
+			opts.ensureAzure().ClientID = args[i]
+		case "--azure-client-secret":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --azure-client-secret")
+			}
+			opts.ensureAzure().ClientSecret = args[i]
+		case "--azure-tenant-id":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --azure-tenant-id")
+			}
+			opts.ensureAzure().TenantID = args[i]
+		case "--kube-context":
+			i++
+			if i >= len(args) {
+				return *opts, nil, fmt.Errorf("missing value for --kube-context")
+			}
+			opts.tokens.Kubernetes = &srt.K8sTokenConfig{Context: args[i]}
 		case "--":
-			return opts, args[i+1:], nil
+			return *opts, args[i+1:], nil
 		default:
-			return opts, args[i:], nil
+			return *opts, args[i:], nil
 		}
 	}
-	return opts, nil, nil
+	return *opts, nil, nil
+}
+
+func detectShell() string {
+	if shell := os.Getenv("SHELL"); shell != "" {
+		return shell
+	}
+	for _, name := range []string{"zsh", "bash", "sh"} {
+		if path := srt.Which(name); path != "" {
+			return path
+		}
+	}
+	return "sh"
 }
 
 func startControlFDReader(fd int) {
 	f := os.NewFile(uintptr(fd), fmt.Sprintf("control-fd-%d", fd))
 	if f == nil {
-		srt.Debugf("Failed to open control fd %d", fd)
+		logger.Debugf("Failed to open control fd %d", fd)
 		return
 	}
 	go func() {
@@ -202,20 +359,20 @@ func startControlFDReader(fd int) {
 			}
 			cfg, err := srt.LoadConfigFromString(line)
 			if err != nil {
-				srt.Debugf("Invalid config on control fd (ignored): %s (%v)", line, err)
+				logger.Debugf("Invalid config on control fd (ignored): %s (%v)", line, err)
 				continue
 			}
 			if cfg == nil {
 				continue
 			}
 			if err := srt.SandboxManager.UpdateConfig(*cfg); err != nil {
-				srt.Debugf("Failed to update config from control fd: %v", err)
+				logger.Debugf("Failed to update config from control fd: %v", err)
 				continue
 			}
-			srt.Debugf("Config updated from control fd")
+			logger.Debugf("Config updated from control fd")
 		}
 		if err := scanner.Err(); err != nil {
-			srt.Debugf("Control fd error: %v", err)
+			logger.Debugf("Control fd error: %v", err)
 		}
 	}()
 }
@@ -229,16 +386,120 @@ func defaultConfigPath() string {
 }
 
 func printHelp() {
-	fmt.Println("srt - Run commands in a sandbox with network and filesystem restrictions")
-	fmt.Println()
-	fmt.Println("Usage:")
-	fmt.Println("  srt [options] [command ...]")
-	fmt.Println("  srt -c <command>")
-	fmt.Println()
-	fmt.Println("Options:")
-	fmt.Println("  -d, --debug                enable debug logging")
-	fmt.Println("  -s, --settings <path>      path to config file (default: ~/.srt-settings.json)")
-	fmt.Println("  -c <command>               run command string directly")
-	fmt.Println("  --control-fd <fd>          read config updates from fd (JSON lines)")
-	fmt.Println("  -h, --help                 show help")
+	fmt.Print(`sbx - Run commands in a sandbox with network and filesystem restrictions
+
+USAGE
+  sbx [options]                      Launch interactive shell (detects $SHELL)
+  sbx [options] -- <command ...>
+  sbx -c <command>
+
+SUBCOMMANDS
+  profile list                       List available presets
+  profile show <name>                Show expanded preset details
+  profile resolve                    Show final merged config for cwd
+
+OPTIONS
+  -c <command>               Run command string directly
+  -p, --preset <name>        Enable a preset (repeatable)
+  -s, --settings <path>      Config file path (default: ~/.srt-settings.json)
+  --control-fd <fd>          Read config updates from fd (JSON lines)
+  -v                         Increase verbosity (-v, -vv, -vvv, -vvvv)
+  -d, --debug                Alias for -v
+  -h, --help                 Show this help
+
+TOKEN FLAGS
+  --github-token             Acquire GitHub token (GITHUB_TOKEN / gh CLI)
+  --aws                      Acquire AWS credentials (default chain)
+  --gcp                      Acquire GCP credentials (GOOGLE_APPLICATION_CREDENTIALS)
+  --kube                     Acquire kubeconfig (current context)
+  --aws-profile <name>       AWS CLI profile
+  --aws-region <region>      AWS region
+  --aws-assume-role <arn>    STS AssumeRole ARN
+  --gcp-project <project>    GCP project ID
+  --gcp-credentials <path>   GCP service account key file
+  --azure-client-id <id>     Azure client ID
+  --azure-client-secret <s>  Azure client secret
+  --azure-tenant-id <id>     Azure tenant ID
+  --kube-context <name>      Kubernetes context name
+
+PRESETS
+  golang  npm  nextjs  playwright  python  rust  docker  git  ssh
+  aws  gcp  azure  homebrew  ide  shell
+
+ENVIRONMENT
+  Sandboxed commands receive a clean environment. Host env vars are
+  injected in three layers (later layers override):
+
+    1. Default passthrough  TERM, HOME, USER, SHELL, PATH, LANG, ...
+    2. Profile passthrough  e.g. golang passes GOPATH, GOMODCACHE
+    3. Explicit env         key=value from presets or .sandbox.yaml
+
+.SANDBOX.YAML REFERENCE
+
+  # ─── Presets ────────────────────────────────────────────────────
+  allow: [golang, git]
+
+  # ─── Network ───────────────────────────────────────────────────
+  network:
+    allowedDomains: [custom-registry.example.com, "*.internal.corp"]
+    deniedDomains:  [evil.example.com]
+    allowUnixSockets: [/var/run/docker.sock]
+    allowAllUnixSockets: false
+    allowLocalBinding:   false
+
+  # ─── Filesystem ────────────────────────────────────────────────
+  filesystem:
+    allowWrite: [., /tmp, $HOME/.cache]
+    denyRead:   [$HOME/.ssh, $HOME/.aws/credentials]
+    denyWrite:  [.env, "**/.env.local"]
+    allowGitConfig: false
+
+  # ─── Environment ───────────────────────────────────────────────
+  env:
+    GONOSUMCHECK: "*"
+  passthroughEnv: [MY_CUSTOM_TOKEN, DATABASE_URL]
+
+  # ─── Violation Handling ────────────────────────────────────────
+  ignoreViolations:
+    curl: [network]
+    git:  [network, filesystem]
+
+  # ─── Short-Lived Tokens ────────────────────────────────────────
+  # Acquire short-lived credentials before the sandbox starts.
+  # Tokens are written to a temp directory and auto-refreshed.
+  #
+  # Provider        Credential File                    Env Vars Set
+  # ───────────     ──────────────────────────────     ──────────────────────────────
+  # aws             <tmp>/.aws/credentials             AWS_SHARED_CREDENTIALS_FILE,
+  #                                                    AWS_DEFAULT_REGION,
+  #                                                    AWS_EC2_METADATA_DISABLED
+  # gcp             <tmp>/gcloud/application_          GOOGLE_APPLICATION_CREDENTIALS,
+  #                   default_credentials.json         CLOUDSDK_CORE_PROJECT
+  # azure           (env vars only)                    AZURE_CLIENT_ID,
+  #                                                    AZURE_CLIENT_SECRET,
+  #                                                    AZURE_TENANT_ID
+  # github          (env var only)                     GITHUB_TOKEN
+  # kubernetes      <tmp>/.kube/config                 KUBECONFIG
+  tokens:
+    github: {}                             # uses GITHUB_TOKEN, GH_TOKEN, or gh CLI
+    aws:
+      profile: my-profile                 # AWS CLI profile (optional)
+      assumeRole: arn:aws:iam::123:role/X  # STS AssumeRole ARN (optional)
+      region: us-east-1                    # default region (optional)
+    gcp:
+      project: my-project                 # GCP project (optional)
+      credentials: /path/to/sa.json       # SA key (default: GOOGLE_APPLICATION_CREDENTIALS)
+    azure:
+      clientID: ...
+      clientSecret: ...
+      tenantID: ...
+    kubernetes:
+      context: my-cluster                  # kubeconfig context name
+
+  # ─── Runtime Behavior ─────────────────────────────────────────
+  allowPty: false              # Allow pseudo-terminal access (auto-enabled
+                               # for interactive shell mode)
+  enableWeakerNestedSandbox: false
+  enableWeakerNetworkIsolation: false
+`)
 }

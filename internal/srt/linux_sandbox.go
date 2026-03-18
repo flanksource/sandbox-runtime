@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/flanksource/commons/logger"
 )
 
 type LinuxNetworkBridgeContext struct {
@@ -40,6 +42,7 @@ type SandboxDependencyCheck struct {
 
 type LinuxSandboxParams struct {
 	Command                   string
+	Interactive               bool
 	NeedsNetworkRestriction   bool
 	HTTPSocketPath            string
 	SOCKSSocketPath           string
@@ -54,6 +57,8 @@ type LinuxSandboxParams struct {
 	RipgrepConfig             *RipgrepConfig
 	MandatoryDenySearchDepth  int
 	SeccompConfig             *SeccompConfig
+	Env                       map[string]string
+	PassthroughEnv            []string
 }
 
 func GetLinuxDependencyStatus(seccompConfig *SeccompConfig) LinuxDependencyStatus {
@@ -154,7 +159,7 @@ func buildLinuxSandboxCommand(httpSocketPath, socksSocketPath, userCommand, secc
 func linuxGetMandatoryDenyPaths(ctx context.Context, ripgrepConfig *RipgrepConfig, maxDepth int, allowGitConfig bool) []string {
 	cwd, err := os.Getwd()
 	if err != nil {
-		Debugf("[Linux] failed to get cwd for mandatory deny paths: %v", err)
+		logger.V(3).Infof("[Linux] failed to get cwd for mandatory deny paths: %v", err)
 		return []string{}
 	}
 
@@ -198,7 +203,7 @@ func linuxGetMandatoryDenyPaths(ctx context.Context, ripgrepConfig *RipgrepConfi
 
 	matches, err := ripGrepCtx(ctx, rgArgs, cwd, ripgrepConfig)
 	if err != nil {
-		Debugf("[Linux] mandatory deny ripgrep scan failed: %v", err)
+		logger.V(3).Infof("[Linux] mandatory deny ripgrep scan failed: %v", err)
 		return uniqueStrings(denyPaths)
 	}
 
@@ -274,7 +279,7 @@ func generateFilesystemArgsLinux(ctx context.Context, readConfig *FsReadRestrict
 		for _, p := range writeConfig.AllowOnly {
 			norm := NormalizePathForSandbox(RemoveTrailingGlobSuffix(p))
 			if ContainsGlobChars(norm) {
-				Debugf("[Linux] skipping glob allowWrite path: %s", p)
+				logger.V(3).Infof("[Linux] skipping glob allowWrite path: %s", p)
 				continue
 			}
 			if !fileExistsOrDir(norm) {
@@ -286,12 +291,12 @@ func generateFilesystemArgsLinux(ctx context.Context, readConfig *FsReadRestrict
 			// write scope unexpectedly.
 			resolvedPath, err := filepath.EvalSymlinks(norm)
 			if err != nil {
-				Debugf("[Linux] skipping write path that could not be resolved: %s", norm)
+				logger.V(3).Infof("[Linux] skipping write path that could not be resolved: %s", norm)
 				continue
 			}
 			if normalizePathForBoundaryChecks(resolvedPath) != normalizePathForBoundaryChecks(norm) &&
 				IsSymlinkOutsideBoundary(norm, resolvedPath) {
-				Debugf("[Linux] skipping symlink write path pointing outside expected location: %s -> %s", p, resolvedPath)
+				logger.V(3).Infof("[Linux] skipping symlink write path pointing outside expected location: %s -> %s", p, resolvedPath)
 				continue
 			}
 
@@ -312,7 +317,7 @@ func generateFilesystemArgsLinux(ctx context.Context, readConfig *FsReadRestrict
 		for _, p := range uniqueStrings(denyPaths) {
 			norm := NormalizePathForSandbox(RemoveTrailingGlobSuffix(p))
 			if ContainsGlobChars(norm) {
-				Debugf("[Linux] skipping glob denyWrite path: %s", p)
+				logger.V(3).Infof("[Linux] skipping glob denyWrite path: %s", p)
 				continue
 			}
 
@@ -327,7 +332,7 @@ func generateFilesystemArgsLinux(ctx context.Context, readConfig *FsReadRestrict
 			symlinkInPath := findSymlinkInPath(norm, allowedWritePaths)
 			if symlinkInPath != "" {
 				args = append(args, "--ro-bind", "/dev/null", symlinkInPath)
-				Debugf("[Linux] Mounted /dev/null at symlink %s to prevent symlink replacement attack", symlinkInPath)
+				logger.V(3).Infof("[Linux] Mounted /dev/null at symlink %s to prevent symlink replacement attack", symlinkInPath)
 				continue
 			}
 
@@ -336,7 +341,7 @@ func generateFilesystemArgsLinux(ctx context.Context, readConfig *FsReadRestrict
 				// If any ancestor component is a regular file the target can
 				// never be created (e.g. git worktree .git is a file).
 				if hasFileAncestor(norm) {
-					Debugf("[Linux] Skipping deny path with file ancestor (cannot create paths under a file): %s", norm)
+					logger.V(3).Infof("[Linux] Skipping deny path with file ancestor (cannot create paths under a file): %s", norm)
 					continue
 				}
 
@@ -357,7 +362,7 @@ func generateFilesystemArgsLinux(ctx context.Context, readConfig *FsReadRestrict
 					}
 				}
 				if !ancestorWithinAllowed {
-					Debugf("[Linux] Skipping non-existent deny path not within allowed paths: %s", norm)
+					logger.V(3).Infof("[Linux] Skipping non-existent deny path not within allowed paths: %s", norm)
 					continue
 				}
 
@@ -369,18 +374,18 @@ func generateFilesystemArgsLinux(ctx context.Context, readConfig *FsReadRestrict
 					// rather than a file.
 					emptyDir, err := os.MkdirTemp("", "srt-empty-")
 					if err != nil {
-						Debugf("[Linux] failed to create empty temp dir for %s: %v", norm, err)
+						logger.V(3).Infof("[Linux] failed to create empty temp dir for %s: %v", norm, err)
 						continue
 					}
 					args = append(args, "--ro-bind", emptyDir, firstMissing)
 					trackBwrapMountPoint(firstMissing)
 					trackBwrapSyntheticSource(emptyDir)
-					Debugf("[Linux] Mounted empty dir at %s to block creation of %s", firstMissing, norm)
+					logger.V(3).Infof("[Linux] Mounted empty dir at %s to block creation of %s", firstMissing, norm)
 				} else {
 					// Leaf component — mount /dev/null to prevent creation.
 					args = append(args, "--ro-bind", "/dev/null", firstMissing)
 					trackBwrapMountPoint(firstMissing)
-					Debugf("[Linux] Mounted /dev/null at %s to block creation of %s", firstMissing, norm)
+					logger.V(3).Infof("[Linux] Mounted /dev/null at %s to block creation of %s", firstMissing, norm)
 				}
 				continue
 			}
@@ -479,7 +484,7 @@ func WrapCommandWithSandboxLinux(ctx context.Context, params LinuxSandboxParams)
 				"--bind", params.SOCKSSocketPath, params.SOCKSSocketPath,
 			)
 
-			for _, envKV := range GenerateProxyEnvVars(3128, 1080) {
+			for _, envKV := range GenerateProxyEnvVars(3128, 1080, params.PassthroughEnv, params.Env) {
 				parts := strings.SplitN(envKV, "=", 2)
 				if len(parts) == 2 {
 					bwrapArgs = append(bwrapArgs, "--setenv", parts[0], parts[1])
@@ -507,23 +512,27 @@ func WrapCommandWithSandboxLinux(ctx context.Context, params LinuxSandboxParams)
 		bwrapArgs = append(bwrapArgs, "--proc", "/proc")
 	}
 
-	bwrapArgs = append(bwrapArgs, "--", shellPath, "-c")
-
-	if params.NeedsNetworkRestriction && params.HTTPSocketPath != "" && params.SOCKSSocketPath != "" {
-		sandboxCommand := buildLinuxSandboxCommand(
-			params.HTTPSocketPath,
-			params.SOCKSSocketPath,
-			params.Command,
-			seccompFilterPath,
-			shellPath,
-			applySeccompPath,
-		)
-		bwrapArgs = append(bwrapArgs, sandboxCommand)
-	} else if seccompFilterPath != "" && applySeccompPath != "" {
-		applyCmd := quoteShellArgs(applySeccompPath, seccompFilterPath, shellPath, "-c", params.Command)
-		bwrapArgs = append(bwrapArgs, applyCmd)
+	if params.Interactive {
+		bwrapArgs = append(bwrapArgs, "--", shellPath, "-l")
 	} else {
-		bwrapArgs = append(bwrapArgs, params.Command)
+		bwrapArgs = append(bwrapArgs, "--", shellPath, "-c")
+
+		if params.NeedsNetworkRestriction && params.HTTPSocketPath != "" && params.SOCKSSocketPath != "" {
+			sandboxCommand := buildLinuxSandboxCommand(
+				params.HTTPSocketPath,
+				params.SOCKSSocketPath,
+				params.Command,
+				seccompFilterPath,
+				shellPath,
+				applySeccompPath,
+			)
+			bwrapArgs = append(bwrapArgs, sandboxCommand)
+		} else if seccompFilterPath != "" && applySeccompPath != "" {
+			applyCmd := quoteShellArgs(applySeccompPath, seccompFilterPath, shellPath, "-c", params.Command)
+			bwrapArgs = append(bwrapArgs, applyCmd)
+		} else {
+			bwrapArgs = append(bwrapArgs, params.Command)
+		}
 	}
 
 	wrapped := quoteShellArgs(append([]string{bwrapPath}, bwrapArgs...)...)
@@ -600,13 +609,13 @@ func cleanupBwrapArtifact(path string, label string) {
 		entries, err := os.ReadDir(path)
 		if err == nil && len(entries) == 0 {
 			_ = os.Remove(path)
-			Debugf("[Linux] Cleaned up %s (dir): %s", label, path)
+			logger.V(4).Infof("[Linux] Cleaned up %s (dir): %s", label, path)
 		}
 		return
 	}
 	if info.Mode().IsRegular() && info.Size() == 0 {
 		_ = os.Remove(path)
-		Debugf("[Linux] Cleaned up %s (file): %s", label, path)
+		logger.V(4).Infof("[Linux] Cleaned up %s (file): %s", label, path)
 	}
 }
 

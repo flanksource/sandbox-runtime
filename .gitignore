@@ -2,3 +2,8 @@ bin/
 dist/
 coverage.out
 .DS_Store
+.claude/
+specs/
+srt
+sbx
+hack/

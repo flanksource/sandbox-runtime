@@ -38,6 +38,27 @@ func TestParseArgs_DefaultMode(t *testing.T) {
 	}
 }
 
+func TestParseArgs_Presets(t *testing.T) {
+	opts, cmd, err := parseArgs([]string{"-p", "golang", "-p", "git", "-c", "go build"})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if len(opts.presets) != 2 || opts.presets[0] != "golang" || opts.presets[1] != "git" {
+		t.Fatalf("unexpected presets: %v", opts.presets)
+	}
+	if opts.commandMode != "go build" {
+		t.Fatalf("unexpected commandMode: %q", opts.commandMode)
+	}
+	if len(cmd) != 0 {
+		t.Fatalf("expected no positional args, got: %v", cmd)
+	}
+
+	_, _, err = parseArgs([]string{"-p"})
+	if err == nil {
+		t.Fatalf("expected error for missing -p value")
+	}
+}
+
 func TestParseArgs_Errors(t *testing.T) {
 	_, _, err := parseArgs([]string{"-s"})
 	if err == nil {

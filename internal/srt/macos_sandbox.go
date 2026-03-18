@@ -6,10 +6,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/flanksource/commons/logger"
 )
 
 type MacOSSandboxParams struct {
 	Command                      string
+	Interactive                  bool
 	NeedsNetworkRestriction      bool
 	HTTPProxyPort                int
 	SOCKSProxyPort               int
@@ -22,12 +25,14 @@ type MacOSSandboxParams struct {
 	AllowGitConfig               bool
 	EnableWeakerNetworkIsolation bool
 	BinShell                     string
+	Env                          map[string]string
+	PassthroughEnv               []string
 }
 
 func macMandatoryDenyPatterns(allowGitConfig bool) []string {
 	cwd, err := os.Getwd()
 	if err != nil {
-		Debugf("[macOS] failed to get cwd for mandatory deny patterns: %v", err)
+		logger.V(3).Infof("[macOS] failed to get cwd for mandatory deny patterns: %v", err)
 		return []string{}
 	}
 	deny := make([]string, 0, 16)
@@ -378,6 +383,7 @@ func generateMacOSBaseProfile(logTag string, enableWeakerNetworkIsolation bool) 
 		`(allow file-ioctl (literal "/dev/urandom"))`,
 		`(allow file-ioctl (literal "/dev/dtracehelper"))`,
 		`(allow file-ioctl (literal "/dev/tty"))`,
+		`(allow file-ioctl (regex #"^/dev/ttys"))`,
 		``,
 		`(allow file-ioctl file-read-data file-write-data`,
 		`  (require-all`,
@@ -410,10 +416,15 @@ func WrapCommandWithSandboxMacOS(params MacOSSandboxParams) (string, error) {
 	logTag := generateMacOSSandboxLogTag(params.Command)
 	profile := generateMacOSSandboxProfile(params, logTag)
 
-	proxyEnv := GenerateProxyEnvVars(params.HTTPProxyPort, params.SOCKSProxyPort)
-	args := []string{"env"}
+	proxyEnv := GenerateProxyEnvVars(params.HTTPProxyPort, params.SOCKSProxyPort, params.PassthroughEnv, params.Env)
+	args := []string{"env", "-i"}
 	args = append(args, proxyEnv...)
-	args = append(args, "sandbox-exec", "-p", profile, shellPath, "-c", params.Command)
+	args = append(args, "sandbox-exec", "-p", profile)
+	if params.Interactive {
+		args = append(args, shellPath, "-l")
+	} else {
+		args = append(args, shellPath, "-c", params.Command)
+	}
 
 	return quoteShellArgs(args...), nil
 }

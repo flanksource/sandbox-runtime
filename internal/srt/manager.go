@@ -10,6 +10,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/flanksource/commons/logger"
 )
 
 type hostNetworkManagerContext struct {
@@ -29,6 +31,7 @@ type Manager struct {
 	macLogMonitor   *macOSSandboxLogMonitor
 	cleanupOnce     sync.Once
 	cleanupStopChan chan struct{} // closed when cleanup signal goroutine should stop
+	tokenManager    *TokenManager
 }
 
 func NewManager() *Manager {
@@ -51,7 +54,7 @@ func (m *Manager) registerCleanup(ctx context.Context) {
 			case <-sigCh:
 				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 				if err := m.Reset(cleanupCtx); err != nil {
-					Debugf("Cleanup failed in registerCleanup: %v", err)
+					logger.V(4).Infof("Cleanup failed in registerCleanup: %v", err)
 				}
 				cancel()
 			case <-m.cleanupStopChan:
@@ -76,6 +79,30 @@ func (m *Manager) Initialize(ctx context.Context, runtimeConfig SandboxRuntimeCo
 	m.config = &runtimeConfig
 	m.ask = sandboxAskCallback
 
+	if runtimeConfig.Tokens != nil {
+		credDir, err := os.MkdirTemp("", "srt-creds-*")
+		if err != nil {
+			return fmt.Errorf("creating credential temp dir: %w", err)
+		}
+		tm := NewTokenManager(credDir)
+		results, err := tm.Acquire(ctx, runtimeConfig.Tokens)
+		if err != nil {
+			tm.Cleanup()
+			return fmt.Errorf("acquiring tokens: %w", err)
+		}
+		if m.config.Env == nil {
+			m.config.Env = make(map[string]string)
+		}
+		for _, r := range results {
+			for k, v := range r.EnvVars {
+				m.config.Env[k] = v
+			}
+			m.config.Filesystem.AllowWrite = append(m.config.Filesystem.AllowWrite, r.WritePaths...)
+		}
+		tm.StartRefresh(ctx, runtimeConfig.Tokens, 60*time.Second)
+		m.tokenManager = tm
+	}
+
 	deps := m.checkDependenciesLocked(nil)
 	if len(deps.Errors) > 0 {
 		return fmt.Errorf("sandbox dependencies not available: %s", strings.Join(deps.Errors, ", "))
@@ -87,7 +114,7 @@ func (m *Manager) Initialize(ctx context.Context, runtimeConfig SandboxRuntimeCo
 	httpPort := 0
 	if runtimeConfig.Network.HTTPProxyPort != nil {
 		httpPort = *runtimeConfig.Network.HTTPProxyPort
-		Debugf("Using external HTTP proxy on port %d", httpPort)
+		logger.Debugf("Using external HTTP proxy on port %d", httpPort)
 	} else {
 		httpServer, port, err := StartHTTPProxyServer(ctx, HTTPProxyOptions{
 			Filter: func(port int, host string) bool {
@@ -107,7 +134,7 @@ func (m *Manager) Initialize(ctx context.Context, runtimeConfig SandboxRuntimeCo
 	socksPort := 0
 	if runtimeConfig.Network.SocksProxyPort != nil {
 		socksPort = *runtimeConfig.Network.SocksProxyPort
-		Debugf("Using external SOCKS proxy on port %d", socksPort)
+		logger.Debugf("Using external SOCKS proxy on port %d", socksPort)
 	} else {
 		socksServer, port, err := StartSocksProxyServer(SocksProxyOptions{
 			Filter: func(port int, host string) bool {
@@ -220,7 +247,7 @@ func (m *Manager) GetFsReadConfig() FsReadRestrictionConfig {
 		stripped := RemoveTrailingGlobSuffix(p)
 		if GetPlatform() == PlatformLinux && ContainsGlobChars(stripped) {
 			expanded := ExpandGlobPattern(p)
-			Debugf("[Sandbox] expanded glob denyRead pattern %q to %d paths on Linux", p, len(expanded))
+			logger.V(3).Infof("[Sandbox] expanded glob denyRead pattern %q to %d paths on Linux", p, len(expanded))
 			denyPaths = append(denyPaths, expanded...)
 			continue
 		}
@@ -240,7 +267,7 @@ func (m *Manager) GetFsWriteConfig() FsWriteRestrictionConfig {
 	for _, p := range m.config.Filesystem.AllowWrite {
 		stripped := RemoveTrailingGlobSuffix(p)
 		if GetPlatform() == PlatformLinux && ContainsGlobChars(stripped) {
-			Debugf("[Sandbox] skipping glob allowWrite pattern on Linux: %s", p)
+			logger.V(3).Infof("[Sandbox] skipping glob allowWrite pattern on Linux: %s", p)
 			continue
 		}
 		allowPaths = append(allowPaths, stripped)
@@ -250,7 +277,7 @@ func (m *Manager) GetFsWriteConfig() FsWriteRestrictionConfig {
 	for _, p := range m.config.Filesystem.DenyWrite {
 		stripped := RemoveTrailingGlobSuffix(p)
 		if GetPlatform() == PlatformLinux && ContainsGlobChars(stripped) {
-			Debugf("[Sandbox] skipping glob denyWrite pattern on Linux: %s", p)
+			logger.V(3).Infof("[Sandbox] skipping glob denyWrite pattern on Linux: %s", p)
 			continue
 		}
 		denyPaths = append(denyPaths, stripped)
@@ -371,6 +398,8 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 		return "", errors.New("sandbox manager is not initialized")
 	}
 
+	interactive := command == ""
+
 	active := cfg
 	if customConfig != nil {
 		if err := customConfig.NormalizeAndValidate(); err != nil {
@@ -378,6 +407,12 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 		}
 		merged := mergeRuntimeConfig(cfg, customConfig)
 		active = &merged
+	}
+
+	if interactive {
+		activeCopy := *active
+		activeCopy.AllowPty = true
+		active = &activeCopy
 	}
 
 	expandedDenyRead := make([]string, 0, len(active.Filesystem.DenyRead))
@@ -415,6 +450,7 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 	case PlatformMacOS:
 		return WrapCommandWithSandboxMacOS(MacOSSandboxParams{
 			Command:                      command,
+			Interactive:                  interactive,
 			NeedsNetworkRestriction:      needsNetworkRestriction,
 			HTTPProxyPort:                httpProxyPort,
 			SOCKSProxyPort:               socksProxyPort,
@@ -427,10 +463,13 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 			AllowGitConfig:               active.Filesystem.AllowGitConfig,
 			EnableWeakerNetworkIsolation: active.EnableWeakerNetworkIsolation,
 			BinShell:                     binShell,
+			Env:                          active.Env,
+			PassthroughEnv:               active.PassthroughEnv,
 		})
 	case PlatformLinux:
 		return WrapCommandWithSandboxLinux(ctx, LinuxSandboxParams{
 			Command:                   command,
+			Interactive:               interactive,
 			NeedsNetworkRestriction:   needsNetworkRestriction,
 			HTTPSocketPath:            httpSocketPath,
 			SOCKSSocketPath:           socksSocketPath,
@@ -445,6 +484,8 @@ func (m *Manager) WrapWithSandbox(ctx context.Context, command, binShell string,
 			RipgrepConfig:             active.Ripgrep,
 			MandatoryDenySearchDepth:  active.MandatoryDenySearchDepth,
 			SeccompConfig:             active.Seccomp,
+			Env:                       active.Env,
+			PassthroughEnv:            active.PassthroughEnv,
 		})
 	default:
 		return "", fmt.Errorf("sandbox configuration is not supported on platform: %s", GetPlatform())
@@ -477,6 +518,11 @@ func (m *Manager) Reset(ctx context.Context) error {
 	if m.socksProxy != nil {
 		_ = m.socksProxy.Close()
 		m.socksProxy = nil
+	}
+
+	if m.tokenManager != nil {
+		m.tokenManager.Cleanup()
+		m.tokenManager = nil
 	}
 
 	// Stop the signal-cleanup goroutine and allow re-registration on the
@@ -521,13 +567,13 @@ func (m *Manager) filterNetworkRequest(port int, host string) bool {
 
 	for _, denied := range cfg.Network.DeniedDomains {
 		if matchesDomainPattern(host, denied) {
-			Debugf("Denied by config rule: %s:%d", host, port)
+			logger.V(3).Infof("Denied by config rule: %s:%d", host, port)
 			return false
 		}
 	}
 	for _, allowed := range cfg.Network.AllowedDomains {
 		if matchesDomainPattern(host, allowed) {
-			Debugf("Allowed by config rule: %s:%d", host, port)
+			logger.V(3).Infof("Allowed by config rule: %s:%d", host, port)
 			return true
 		}
 	}
@@ -603,6 +649,17 @@ func mergeRuntimeConfig(base *SandboxRuntimeConfig, override *SandboxRuntimeConf
 	}
 	if override.Filesystem.AllowGitConfig {
 		merged.Filesystem.AllowGitConfig = true
+	}
+
+	if override.Env != nil {
+		copiedEnv := make(map[string]string, len(override.Env))
+		for k, v := range override.Env {
+			copiedEnv[k] = v
+		}
+		merged.Env = copiedEnv
+	}
+	if override.PassthroughEnv != nil {
+		merged.PassthroughEnv = append([]string{}, override.PassthroughEnv...)
 	}
 
 	if override.IgnoreViolations != nil {

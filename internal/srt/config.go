@@ -6,48 +6,51 @@ import (
 )
 
 type MitmProxyConfig struct {
-	SocketPath string   `json:"socketPath"`
-	Domains    []string `json:"domains"`
+	SocketPath string   `json:"socketPath" yaml:"socketPath"`
+	Domains    []string `json:"domains" yaml:"domains"`
 }
 
 type NetworkConfig struct {
-	AllowedDomains      []string         `json:"allowedDomains"`
-	DeniedDomains       []string         `json:"deniedDomains"`
-	AllowUnixSockets    []string         `json:"allowUnixSockets,omitempty"`
-	AllowAllUnixSockets bool             `json:"allowAllUnixSockets,omitempty"`
-	AllowLocalBinding   bool             `json:"allowLocalBinding,omitempty"`
-	HTTPProxyPort       *int             `json:"httpProxyPort,omitempty"`
-	SocksProxyPort      *int             `json:"socksProxyPort,omitempty"`
-	MitmProxy           *MitmProxyConfig `json:"mitmProxy,omitempty"`
+	AllowedDomains      []string         `json:"allowedDomains" yaml:"allowedDomains"`
+	DeniedDomains       []string         `json:"deniedDomains" yaml:"deniedDomains"`
+	AllowUnixSockets    []string         `json:"allowUnixSockets,omitempty" yaml:"allowUnixSockets,omitempty"`
+	AllowAllUnixSockets bool             `json:"allowAllUnixSockets,omitempty" yaml:"allowAllUnixSockets,omitempty"`
+	AllowLocalBinding   bool             `json:"allowLocalBinding,omitempty" yaml:"allowLocalBinding,omitempty"`
+	HTTPProxyPort       *int             `json:"httpProxyPort,omitempty" yaml:"httpProxyPort,omitempty"`
+	SocksProxyPort      *int             `json:"socksProxyPort,omitempty" yaml:"socksProxyPort,omitempty"`
+	MitmProxy           *MitmProxyConfig `json:"mitmProxy,omitempty" yaml:"mitmProxy,omitempty"`
 }
 
 type FilesystemConfig struct {
-	DenyRead       []string `json:"denyRead"`
-	AllowWrite     []string `json:"allowWrite"`
-	DenyWrite      []string `json:"denyWrite"`
-	AllowGitConfig bool     `json:"allowGitConfig,omitempty"`
+	DenyRead       []string `json:"denyRead" yaml:"denyRead"`
+	AllowWrite     []string `json:"allowWrite" yaml:"allowWrite"`
+	DenyWrite      []string `json:"denyWrite" yaml:"denyWrite"`
+	AllowGitConfig bool     `json:"allowGitConfig,omitempty" yaml:"allowGitConfig,omitempty"`
 }
 
 type RipgrepConfig struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args,omitempty"`
+	Command string   `json:"command" yaml:"command"`
+	Args    []string `json:"args,omitempty" yaml:"args,omitempty"`
 }
 
 type SeccompConfig struct {
-	BPFPath   string `json:"bpfPath,omitempty"`
-	ApplyPath string `json:"applyPath,omitempty"`
+	BPFPath   string `json:"bpfPath,omitempty" yaml:"bpfPath,omitempty"`
+	ApplyPath string `json:"applyPath,omitempty" yaml:"applyPath,omitempty"`
 }
 
 type SandboxRuntimeConfig struct {
-	Network                      NetworkConfig       `json:"network"`
-	Filesystem                   FilesystemConfig    `json:"filesystem"`
-	IgnoreViolations             map[string][]string `json:"ignoreViolations,omitempty"`
-	EnableWeakerNestedSandbox    bool                `json:"enableWeakerNestedSandbox,omitempty"`
-	EnableWeakerNetworkIsolation bool                `json:"enableWeakerNetworkIsolation,omitempty"`
-	Ripgrep                      *RipgrepConfig      `json:"ripgrep,omitempty"`
-	MandatoryDenySearchDepth     int                 `json:"mandatoryDenySearchDepth,omitempty"`
-	AllowPty                     bool                `json:"allowPty,omitempty"`
-	Seccomp                      *SeccompConfig      `json:"seccomp,omitempty"`
+	Network                      NetworkConfig       `json:"network" yaml:"network"`
+	Filesystem                   FilesystemConfig    `json:"filesystem" yaml:"filesystem"`
+	Env                          map[string]string   `json:"env,omitempty" yaml:"env,omitempty"`
+	PassthroughEnv               []string            `json:"passthroughEnv,omitempty" yaml:"passthroughEnv,omitempty"`
+	IgnoreViolations             map[string][]string `json:"ignoreViolations,omitempty" yaml:"ignoreViolations,omitempty"`
+	EnableWeakerNestedSandbox    bool                `json:"enableWeakerNestedSandbox,omitempty" yaml:"enableWeakerNestedSandbox,omitempty"`
+	EnableWeakerNetworkIsolation bool                `json:"enableWeakerNetworkIsolation,omitempty" yaml:"enableWeakerNetworkIsolation,omitempty"`
+	Ripgrep                      *RipgrepConfig      `json:"ripgrep,omitempty" yaml:"ripgrep,omitempty"`
+	MandatoryDenySearchDepth     int                 `json:"mandatoryDenySearchDepth,omitempty" yaml:"mandatoryDenySearchDepth,omitempty"`
+	AllowPty                     bool                `json:"allowPty,omitempty" yaml:"allowPty,omitempty"`
+	Seccomp                      *SeccompConfig      `json:"seccomp,omitempty" yaml:"seccomp,omitempty"`
+	Tokens                       *TokensConfig       `json:"tokens,omitempty" yaml:"tokens,omitempty"`
 }
 
 func DefaultConfig() SandboxRuntimeConfig {
@@ -62,6 +65,48 @@ func DefaultConfig() SandboxRuntimeConfig {
 			DenyWrite:  []string{},
 		},
 	}
+}
+
+func (c *SandboxRuntimeConfig) MergeFrom(other *SandboxRuntimeConfig) {
+	c.Network.AllowedDomains = mergeStringSlicesDedup(c.Network.AllowedDomains, other.Network.AllowedDomains)
+	c.Network.DeniedDomains = mergeStringSlicesDedup(c.Network.DeniedDomains, other.Network.DeniedDomains)
+	c.Network.AllowUnixSockets = mergeStringSlicesDedup(c.Network.AllowUnixSockets, other.Network.AllowUnixSockets)
+	c.Network.AllowAllUnixSockets = c.Network.AllowAllUnixSockets || other.Network.AllowAllUnixSockets
+	c.Network.AllowLocalBinding = c.Network.AllowLocalBinding || other.Network.AllowLocalBinding
+	if other.Network.HTTPProxyPort != nil {
+		c.Network.HTTPProxyPort = other.Network.HTTPProxyPort
+	}
+	if other.Network.SocksProxyPort != nil {
+		c.Network.SocksProxyPort = other.Network.SocksProxyPort
+	}
+	if other.Network.MitmProxy != nil {
+		c.Network.MitmProxy = other.Network.MitmProxy
+	}
+	c.Filesystem.DenyRead = mergeStringSlicesDedup(c.Filesystem.DenyRead, other.Filesystem.DenyRead)
+	c.Filesystem.AllowWrite = mergeStringSlicesDedup(c.Filesystem.AllowWrite, other.Filesystem.AllowWrite)
+	c.Filesystem.DenyWrite = mergeStringSlicesDedup(c.Filesystem.DenyWrite, other.Filesystem.DenyWrite)
+	c.Filesystem.AllowGitConfig = c.Filesystem.AllowGitConfig || other.Filesystem.AllowGitConfig
+	c.PassthroughEnv = mergeStringSlicesDedup(c.PassthroughEnv, other.PassthroughEnv)
+	c.EnableWeakerNestedSandbox = c.EnableWeakerNestedSandbox || other.EnableWeakerNestedSandbox
+	c.EnableWeakerNetworkIsolation = c.EnableWeakerNetworkIsolation || other.EnableWeakerNetworkIsolation
+	c.AllowPty = c.AllowPty || other.AllowPty
+	if other.Env != nil {
+		if c.Env == nil {
+			c.Env = make(map[string]string)
+		}
+		for k, v := range other.Env {
+			c.Env[k] = v
+		}
+	}
+	if other.IgnoreViolations != nil {
+		if c.IgnoreViolations == nil {
+			c.IgnoreViolations = make(map[string][]string)
+		}
+		for k, v := range other.IgnoreViolations {
+			c.IgnoreViolations[k] = mergeStringSlicesDedup(c.IgnoreViolations[k], v)
+		}
+	}
+	c.Tokens = MergeTokensConfig(c.Tokens, other.Tokens)
 }
 
 func (c *SandboxRuntimeConfig) NormalizeAndValidate() error {
