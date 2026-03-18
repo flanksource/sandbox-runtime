@@ -31,10 +31,6 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if len(os.Args) > 1 && os.Args[1] == "test-sandbox" {
-		os.Exit(runTestSandbox(os.Args[2:]))
-	}
-
 	if len(os.Args) > 1 && os.Args[1] == "profile" {
 		os.Exit(runProfile(os.Args[2:]))
 	}
@@ -401,8 +397,6 @@ SUBCOMMANDS
   profile list                       List available presets
   profile show <name>                Show expanded preset details
   profile resolve                    Show final merged config for cwd
-  profile init [--ai-model <model>]  Detect project type, suggest .sandbox.yaml
-  test-sandbox <fixture-paths...>    Run fixture-based sandbox tests
 
 OPTIONS
   -c <command>               Run command string directly

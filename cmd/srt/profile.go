@@ -26,8 +26,6 @@ func runProfile(args []string) int {
 		return profileShow(args[1])
 	case "resolve":
 		return profileResolve()
-	case "init":
-		return profileInit(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown profile subcommand: %s\n", args[0])
 		printProfileHelp()
